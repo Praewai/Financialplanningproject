@@ -1318,9 +1318,9 @@ elif st.session_state["current_step"] == 1:
             profile = "ระดับ 3: เสี่ยงปานกลางค่อนข้างสูง (Moderate)"
         elif total_score >= 14:
             profile = "ระดับ 2: เสี่ยงปานกลางค่อนข้างต่ำ (Moderate Conservative)"
-        else:
+        elif total_score == 10:
             profile = "ระดับ 1: เสี่ยงต่ำ (Conservative)"
-        st.success(f"คะแนน: {total_score} - {profile}")
+        st.success(f"คะแนน: {total_score} - {profile}")  
         
         # Save profile for later use
         st.session_state["risk_profile"] = profile
