@@ -3,8 +3,12 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import io
-from matplotlib.backends.backend_pdf import PdfPages
 import csv
+import re
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
+from reportlab.lib.units import inch
 
 # =========================================================
 # PAGE CONFIGURATION
@@ -17,19 +21,19 @@ st.title("Post Retirement Financial Planner")
 @st.dialog("⚠️ Disclaimer (คำเตือน)")
 def show_disclaimer():
     st.markdown("""
-This website was created by Financial Engineering Students not Financial Planner nor Investment Advisor and we do not have access to any non public information.
-We cannot guarantee that the simulation will be 100% correct.
-This was created solely for financial planner to use as an assistance for rough estimation and not to be use as a replacement of one.
-We are not regulated by any Financial Service Authority.
+    This website was created by Financial Engineering Students not Financial Planner nor Investment Advisor and we do not have access to any non public information.
+    We cannot guarantee that the simulation will be 100% correct.
+    This was created solely for financial planner to use as an assistance for rough estimation and not to be use as a replacement of one.
+    We are not regulated by any Financial Service Authority.
 
-เว็บไซต์นี้จัดทำขึ้นโดยนักศึกษาภาควิชาวิศวกรรมการเงิน (Financial Engineering) ไม่ใช่ผู้วางแผนการเงิน (Financial Planner) หรือที่ปรึกษาการลงทุน (Investment Advisor) และผู้จัดทำไม่ได้มีการเข้าถึงข้อมูลภายใน (Non-public information) ใดๆ ทั้งสิ้น
-เราไม่สามารถรับรองได้ว่าผลจากการจำลอง (Simulation) จะถูกต้องแม่นยำ 100% เครื่องมือนี้ถูกสร้างขึ้นเพื่อใช้เป็นเครื่องช่วยคำนวณเบื้องต้นสำหรับผู้วางแผนการเงินเท่านั้น ไม่ควรนำไปใช้ทดแทนการวางแผนการเงินแบบเต็มรูปแบบ และเราไม่ได้อยู่ภายใต้การกำกับดูแลของหน่วยงานกำกับดูแลบริการทางการเงินใดๆ""")
+    เว็บไซต์นี้จัดทำขึ้นโดยนักศึกษาภาควิชาวิศวกรรมการเงิน (Financial Engineering) ไม่ใช่ผู้วางแผนการเงิน (Financial Planner) หรือที่ปรึกษาการลงทุน (Investment Advisor) และผู้จัดทำไม่ได้มีการเข้าถึงข้อมูลภายใน (Non-public information) ใดๆ ทั้งสิ้น
+    เราไม่สามารถรับรองได้ว่าผลจากการจำลอง (Simulation) จะถูกต้องแม่นยำ 100% เครื่องมือนี้ถูกสร้างขึ้นเพื่อใช้เป็นเครื่องช่วยคำนวณเบื้องต้นสำหรับผู้วางแผนการเงินเท่านั้น ไม่ควรนำไปใช้ทดแทนการวางแผนการเงินแบบเต็มรูปแบบ และเราไม่ได้อยู่ภายใต้การกำกับดูแลของหน่วยงานกำกับดูแลบริการทางการเงินใดๆ""")
     if st.button("I understand (รับทราบ)"):
         st.rerun()
 
-if "accepted_terms" not in st.session_state:
-    show_disclaimer()
-    st.session_state["accepted_terms"] = True
+    if "accepted_terms" not in st.session_state:
+        show_disclaimer()
+        st.session_state["accepted_terms"] = True
 # =========================================================
 # CORE SIMULATION ENGINE
 # =========================================================
@@ -189,8 +193,8 @@ class RetirementSimulator:
         years,
         inflation_rate,
         starting_age,
+        inheritance_goal,
         returns_override=None, 
-        inheritance_goal=0.0,
         n_simulations=50000
         ):
         returns = returns_override if returns_override is not None else self.simulate_returns(
@@ -389,6 +393,7 @@ def money_input(label, default_val, key_suffix):
         st.session_state[data_key] = val
         st.session_state[fmt_key] = f"{val:,.0f}"
 
+
     # --- SYNC FUNCTION (The Magic Fix) ---
     def on_change():
         # 1. Get what the user typed
@@ -448,6 +453,7 @@ def pct_input(label, key):
     )
     
     return st.session_state[data_key]
+
 def get_val_num(key_suffix):
     return float(st.session_state.get(f"v_{key_suffix}", 0.0))
 def get_num(key_suffix):
@@ -497,7 +503,6 @@ def build_full_report_csv(export_data, res, alloc, years=30):
         "pct_deposit": "Fixed Deposit",
         "pct_gov_bond": "Thai Gov Bond 1Y",
         "pct_seti": "SET Index",
-        "pct_XAUTHB": "Gold (THB)",
         "pct_REITTH": "Thai REIT",
         "pct_msci_stock": "MSCI World Equity",
         "pct_msci_gov_bond": "MSCI Gov Bond",
@@ -634,11 +639,49 @@ def build_pdf_bytes(data, res):
     SIZE_LABEL = 10
     SIZE_BODY = 10
 
+    # --- Page 1: Cover Page ---
+    # ใช้หัวข้อที่คุณกำหนด: รายงานการเงิน การวางแผนหลังเกษียณ
+    c.setFont(FONT_BOLD, 25) # ขยายขนาดพิเศษสำหรับหน้าปก
+    c.drawCentredString(width/2, height/2 + 50, "Retirement Financial Planning Report")
+    
+    c.setFont(FONT_REG, SIZE_SUB)
+    customer_name = data.get('name')
+    c.drawString(1 * inch, 1.5 * inch, f"Customer: {customer_name}")
+    c.showPage()
+
+    # --- Page 2: Disclaimer (คำเตือน) ---
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawCentredString(width/2, height - 1 * inch, "Disclaimer / Warning")
+    
+    c.setFont(FONT_REG, SIZE_BODY)
+    # ข้อความคำเตือนตามที่คุณกำหนด
+    warning_lines = [
+        "This website was created by Financial Engineering Students not Financial Planner nor Investment Advisor ",
+        "and we do not have access to any non public information.We cannot guarantee that the simulation will be 100% correct.",
+        "This was created solely for financial planner to use as an assistance for rough estimation and ",
+        "not to be use as a replacement of one. We are not regulated by any Financial Service Authority."
+    ]
+    
+    y = height - 1.5 * inch
+    for line in warning_lines:
+        c.drawCentredString(width/2, y, line)
+        y -= 20
+    c.showPage()
+
+    # --- Page 3: Table of Contents ---
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawString(1 * inch, height - 1 * inch, "Table of Contents")
+    
+    c.setFont(FONT_REG, SIZE_LABEL)
+    c.drawString(1.2 * inch, height - 1.6 * inch, "1. Financial Health ..................................................................... Page 1")
+    c.drawString(1.2 * inch, height - 1.9 * inch, "2. Asset Allocation & Simulation Result ..................................... Page 2")
+    c.showPage()
+
     # ==========================================
     # PAGE 1: FINANCIAL HEALTH (เพิ่มระยะห่างบรรทัดให้โปร่งขึ้น)
     # ==========================================
     c.setFont(FONT_BOLD, SIZE_TITLE)
-    c.drawString(50, height - 50, "Financial Planning: User Health Report")
+    c.drawString(50, height - 50, "Financial Planning: Financial Health")
     
     # --- SECTION A: Personal Information ---
     y = height - 90
@@ -650,30 +693,12 @@ def build_pdf_bytes(data, res):
     c.drawString(250, y, f"Retire Age: {data.get('retire_age')} Years")
     c.drawString(400, y, f"Life Expectancy: {data.get('life_exp')} Years")
     y -= 22 
-    c.drawString(60, y, f"Expected Inflation: {data.get('inflation', 0.03)*100:.2f}%")
-    c.drawString(250, y, f"Inheritance Goal: {data.get('inheritance_goal', 0):,.2f} THB")
+    c.drawString(60, y, f"Inheritance Goal: {data.get('inheritance_goal', 0):,.2f} THB")
 
-    # --- SECTION B: Investable Assets ---
-    y -= 40
-    c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y, "B. Investable Assets")
-    c.setFont(FONT_REG, SIZE_BODY)
-    y -= 25
-    asset_data = data.get("asset_detail", {})
-    col_y = y
-    for i, (k, v) in enumerate(asset_data.items()):
-        if v > 0:
-            c.drawString(60 if i % 2 == 0 else 300, col_y, f"- {k}: {v:,.2f} THB")
-            if i % 2 != 0 or i == len(asset_data)-1: col_y -= 22 
-    
-    y = col_y - 12 # เพิ่มระยะช่องว่างก่อนบรรทัดยอดรวม
-    c.setFont(FONT_BOLD, SIZE_BODY)
-    c.drawString(60, y, f"Total Investable Assets: {data.get('investable', 0):,.2f} THB")
-
-    # --- SECTION C: Debt Summary  ---
+    # --- SECTION B: Debt Summary  ---
     y -= 45 
     c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y, "C. Debt Summary")
+    c.drawString(50, y, "B. Debt Summary")
     
     # วาดรายการหนี้ย่อย
     c.setFont(FONT_REG, SIZE_BODY)
@@ -696,75 +721,84 @@ def build_pdf_bytes(data, res):
     c.setFont(FONT_BOLD, SIZE_BODY)
     c.drawString(60, y_debt_total, f"Total Liabilities: {data.get('total_debt', 0):,.2f} THB")
 
-    # --- SECTION D: Post-Retirement Cash Flow ---
-    # เริ่มต้น Section D โดยอ้างอิงจากตำแหน่งสุดท้ายของ Section C
+    # --- SECTION C: Post-Retirement Cash Flow ---
     y = y_debt_total - 45 
     c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y, "D. Post-Retirement Cash Flow (Annual)")
+    c.drawString(50, y, "C. Post-Retirement Cash Flow (Annual)")
     
-    # Income Sources
-    y -= 25
+    # --- กำหนดตำแหน่งแกน X สำหรับ 2 คอลัมน์ ---
+    x_left = 60
+    x_right = 320  # ขยับไปทางขวาประมาณครึ่งหน้ากระดาษ A4
+    current_y = y - 25
+    start_y = current_y # เก็บค่า y เริ่มต้นไว้เพื่อให้ทั้งสองคอลัมน์เริ่มสูงเท่ากัน
+
+    # --- COLUMN 1: Income Sources (ฝั่งซ้าย) ---
     c.setFont(FONT_BOLD, SIZE_LABEL)
-    c.drawString(60, y, "[Income Sources]")
+    c.drawString(x_left, current_y, "Income Sources")
     c.setFont(FONT_REG, SIZE_BODY)
-    y_inc = y
+
+    y_inc = current_y
     for k, v in data.get("inc_detail", {}).items():
         if v > 0:
             y_inc -= 20 
-            c.drawString(75, y_inc, f"- {k}: {v:,.2f} THB")
-    
-    # Expenses Breakdown (เว้นระยะจาก Income เล็กน้อย)
-    y = y_inc - 30
+            c.drawString(x_left + 15, y_inc, f"- {k}: {v:,.0f} THB")
+
+    # --- COLUMN 2: Expenses Breakdown (ฝั่งขวา) ---
+    # ใช้ start_y เพื่อให้หัวข้อ [Expenses Breakdown] อยู่ระดับเดียวกับ [Income Sources]
     c.setFont(FONT_BOLD, SIZE_LABEL)
-    c.drawString(60, y, "[Expenses Breakdown]")
+    c.drawString(x_right, start_y, "Expenses Breakdown")
     c.setFont(FONT_REG, SIZE_BODY)
-    y_exp = y
+
+    y_exp = start_y
     all_exp = {**data.get("exp_fixed_detail", {}), **data.get("exp_var_detail", {})}
     for k, v in all_exp.items():
         if v > 0:
             y_exp -= 20 
-            c.drawString(75, y_exp, f"- {k}: {v:,.2f} THB")
-            
-    # เตรียมตำแหน่งสำหรับ Financial Health Summary
-    y = y_exp - 45
+            c.drawString(x_right + 15, y_exp, f"- {k}: {v:,.0f} THB")
 
-    c.setFont(FONT_BOLD, SIZE_LABEL)
-    c.drawString(60, y, "[Expenses Breakdown]")
-    c.setFont(FONT_REG, SIZE_BODY)
-    all_exp = {**data.get("exp_fixed_detail", {}), **data.get("exp_var_detail", {})}
-    for k, v in all_exp.items():
-        if v > 0:
-            y -= 20 
-            c.drawString(75, y, f"- {k}: {v:,.2f} THB")
-    y -= 45 
+    total_inc = sum(data.get("inc_detail", {}).values())
+    total_exp = sum(data.get("exp_fixed_detail", {}).values()) + sum(data.get("exp_var_detail", {2}).values())
+    net_flow = total_inc - total_exp
 
-    # --- Financial Health Summary (พร้อมรายเดือน) ---
-    c.setStrokeColorRGB(0.7, 0.7, 0.7)
-    c.line(50, y + 20, width - 50, y + 20)
+    # --- 1. สรุปยอดรวม Income / Expense (ต่อท้ายคอลัมน์) ---
+    y = min(y_inc, y_exp) - 40 
     
+    c.setStrokeColorRGB(0.8, 0.8, 0.8)
+    c.line(60, y + 15, 535, y + 15) # เส้นคั่นเบาๆ
+
+    c.setFont(FONT_BOLD, SIZE_BODY)
+    c.setFillColorRGB(0, 0, 0)
+    c.drawString(60, y, "Total Income:")
+    c.drawRightString(280, y, f"{total_inc:,.0f} THB")
+
+    c.drawString(320, y, "Total Expenses:")
+    c.drawRightString(535, y, f"{total_exp:,.0f} THB")
+
+    # --- 2. Financial Health Summary (ส่วนล่างสุดของหน้า) ---
+    y -= 60
     c.setFont(FONT_BOLD, SIZE_SUB)
     c.drawString(50, y, "Financial Health Summary")
-    
-    net_yearly = data.get('yearly_savings', 0)
-    net_monthly = net_yearly / 12
-    
+
+    # --- 3. รายละเอียดประกอบ (Net Worth / Monthly) ---
     y -= 30
+    c.setFillColorRGB(0, 0, 0)
     c.setFont(FONT_REG, SIZE_BODY)
     c.drawString(60, y, f"Net Worth: {data.get('net_worth', 0):,.2f} THB")
-    c.drawString(300, y, f"Net Cashflow/Year: {net_yearly:,.2f} THB")
-    
-    y -= 20
-    if net_monthly < 0:
-        c.setFillColorRGB(0.8, 0, 0) # สีแดงถ้าติดลบ
-    c.drawString(300, y, f"Net Cashflow/Month: {net_monthly:,.2f} THB")
-    c.setFillColorRGB(0, 0, 0) 
 
-    c.setFont(FONT_REG, 8)
-    c.drawString(width/2 - 20, 30, "Page 1 of 2")
-    c.showPage() 
+    # แสดงรายละเอียดรายปี/เดือน ฝั่งขวา
+    if net_flow < 0:
+        c.setFillColorRGB(0.8, 0, 0)
+    
+    c.drawRightString(535, y, f"Net Cashflow/Year: {net_flow:,.2f} THB")
+    y -= 22
+    c.drawRightString(535, y, f"Net Cashflow/Month: {(net_flow/12):,.2f} THB")
+    
+    # รีเซ็ตสีก่อนจบหน้า
+    c.setFillColorRGB(0, 0, 0)
+    c.showPage()
 
     # ==========================================
-    # PAGE 2: ASSET PIE CHART & MONTE CARLO
+    # PAGE 4: ASSET PIE CHART & MONTE CARLO
     # ==========================================
     y_top = height - 50
     c.setFont(FONT_BOLD, SIZE_TITLE)
@@ -801,7 +835,7 @@ def build_pdf_bytes(data, res):
     y_graph = y_pie_section - 250
     if res is not None:
         c.setFont(FONT_BOLD, SIZE_SUB)
-        c.drawString(50, y_graph, "5. Wealth Projection (Monte Carlo Simulation)")
+        c.drawString(50, y_graph, "Wealth Projection (Monte Carlo Simulation)")
         
         # วาดกราฟ (ขนาดปรับให้พอดี)
         fig_mc, ax_mc = plt.subplots(figsize=(10, 4))
@@ -825,8 +859,9 @@ def build_pdf_bytes(data, res):
         # --- ส่วนที่เพิ่ม: Simulation Results Summary ---
         y_sim_stats = y_graph - 260
         c.setStrokeColorRGB(0.7, 0.7, 0.7)
-        c.line(50, y_sim_stats + 15, width - 50, y_sim_stats + 15) # ขีดเส้นคั่น
+        c.line(50, y_sim_stats + 15, width - 50, y_sim_stats + 20) # ขีดเส้นคั่น
         
+        y_sim_stats -= 20
         c.setFont(FONT_BOLD, SIZE_SUB)
         c.drawString(50, y_sim_stats, "Simulation Outcome Summary")
         
@@ -936,6 +971,7 @@ def parse_bloomberg_file(uploaded_file):
 
     except Exception as e: 
         return None, str(e)
+
 # =========================================================
 # NAV BAR
 # =========================================================
@@ -1008,12 +1044,17 @@ if st.session_state["current_step"] == 0:
         i1, i2 = st.columns(2)
         with i1:
             money_cash = money_input("เงินสด/เงินฝาก (Cash)", 0, "cash_dep")
-            money_bond = money_input("ตราสารหนี้ (Bond)", 0, "bond")
+            money_bond = money_input("ตราสารหนี้ (Thai Bond)", 0, "bond")
+            money_stock = money_input("หุ้นไทย (Thai stock)", 0, "stock")
+            money_reit = money_input ("PF&REIT",0,"reit")
+           
         with i2:
-            money_stock = money_input("หุ้นไทย (Thai Equity)", 0, "stock")
-            money_glstock = money_input("หุ้นต่างประเทศ (Global Equity)", 0, "gl_stock")
-            other_invest = money_input("ทองคำ/ทรัพย์สินเพื่อการลงทุนอื่นๆ (Gold/Alternative)", 0, "other_invest")
-    investable_assets = money_cash + money_bond + money_stock + money_glstock + other_invest
+            money_glbond = money_input("ตราสารหนี้โลก (Global Bond)",0, "gl_bond")
+            money_glstock = money_input("หุ้นต่างประเทศ (Global stock)", 0, "gl_stock")
+            money_glreit = money_input("Global REIT",0,"gl_reit")
+            money_gold = money_input("ทองคำ (Gold)", 0, "gold_invest")
+
+    investable_assets = money_cash + money_bond + money_stock + money_glstock + money_reit + money_glbond + money_glreit+money_gold
     st.metric("💰 รวมเงินลงทุนทั้งหมด",f"{investable_assets:,.0f}")
     st.session_state["start_port"] = investable_assets
 
@@ -1034,36 +1075,43 @@ if st.session_state["current_step"] == 0:
     st.subheader("D. กระแสเงินสด (Cash Flow) — หลังเกษียณ")
     # --- 1. DEFINE THE HELPER FUNCTION ---
     def cashflow_input(label, key_suffix):
-        """
-        Creates a aligned row: [Label] | [Money Input] | [Freq Select]
-        Matches the style of your 'money_input' but adds a frequency toggle.
-        """
-        # Create 3 columns with vertical centering (keeps everything straight)
+        options = ["ต่อเดือน (Monthly)", "ต่อปี (Yearly)"]
+        freq_key = f"freq_{key_suffix}"
+        
+        # 1. ตรวจสอบค่าใน Session State ครั้งแรกที่โหลด
+        if freq_key not in st.session_state:
+            st.session_state[freq_key] = options[0]
+
+        # 2. ฟังก์ชัน Callback เพื่อดึงค่าจาก Widget มาเก็บไว้ใน State จริงๆ
+        def on_change():
+            st.session_state[freq_key] = st.session_state[f"widget_{freq_key}"]
+
         c_lbl, c_inp, c_frq = st.columns([2,2,2], vertical_alignment="center")
         
         with c_lbl:
             st.markdown(f"{label}")
             
         with c_inp:
-            # Calls YOUR existing money_input function
-            # We pass "" as the label because we already showed it in the left column
             amount = money_input("", 0, key_suffix) 
             
         with c_frq:
-            freq_key = f"freq_{key_suffix}"
-            if freq_key not in st.session_state:
-                st.session_state[freq_key] = "ต่อเดือน (Monthly)"
+            # 3. ใช้ Widget Key แยกต่างหาก (widget_...) และดึง index จากค่าใน State
+            current_val = st.session_state[freq_key]
+            current_idx = options.index(current_val) if current_val in options else 0
             
-            freq = st.radio(
+            st.radio(
                 "", 
-                ["ต่อเดือน (Monthly)", "ต่อปี (Yearly)"],
+                options,
+                index=current_idx,
                 horizontal=True,
-                key=freq_key, 
+                key=f"widget_{freq_key}", # ใช้ชื่อ Key ที่ต่างจาก State Key
+                on_change=on_change,      # เมื่อเปลี่ยนค่าให้ไปรันฟังก์ชันเก็บค่า
                 label_visibility="collapsed"
             )
         
-        # Calculate Annual Amount immediately
-        if "Monthly" in freq:
+        # 4. ใช้ค่าจาก State หลักมาคำนวณเสมอ
+        final_freq = st.session_state[freq_key]
+        if "Monthly" in final_freq:
             return float(amount * 12)
         else:
             return float(amount)
@@ -1135,11 +1183,15 @@ if st.session_state["current_step"] == 0:
     st.session_state["money_save"] = yearly_savings
     st.session_state["money_debt"] = total_debt 
     
-    st.session_state["v_cash_dep"] = money_cash
-    st.session_state["v_bond"] = money_bond
-    st.session_state["v_stock"] = money_stock
-    st.session_state["v_gl_stock"] = money_glstock
-    st.session_state["v_other_invest"] = other_invest
+    st.session_state["v_cash_dep"]  = money_cash
+    st.session_state["v_bond"]      = money_bond
+    st.session_state["v_stock"]     = money_stock
+    st.session_state["v_reit"]      = money_reit
+    st.session_state["v_gl_bond"]   = money_glbond
+    st.session_state["v_gl_stock"]  = money_glstock
+    st.session_state["v_gl_reit"]   = money_glreit
+    st.session_state["v_gold"]      = money_gold
+
 
     # inflation 
     st.session_state["inflation"] = st.slider(
@@ -1204,6 +1256,40 @@ elif st.session_state["current_step"] == 1:
             label_visibility="collapsed"
         )
 
+    @st.dialog("🎯 ข้อแนะนำการลงทุนตามระดับความเสี่ยงของคุณ")
+    def show_risk_advice():
+        # ดึงค่าจาก session_state แทนการรับผ่าน arguments
+        profile = st.session_state.get("risk_profile", "ไม่ระบุ")
+        score = st.session_state.get("risk_score", 0)
+        st.write(f"ระดับความเสี่ยงของคุณคือ: **{profile}** **(คะแนน: {score}**)")
+        
+        if "1" in profile: # Conservative
+            advice = "เน้นรักษาเงินต้นเป็นหลัก เหมาะสำหรับผู้ที่รับความเสี่ยงได้น้อยมาก"
+            data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
+                    "สัดส่วน": ["100%", "0%", "0%"]}
+        elif "2" in profile: # Moderate Conservative
+            advice = "ยอมรับความเสี่ยงได้บ้าง เพื่อโอกาสรับผลตอบแทนที่สูงกว่าเงินฝาก"
+            data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
+                    "สัดส่วน": ["80%", "10%", "10%"]}
+        elif "3" in profile: # Moderate
+            advice = "สมดุลระหว่างผลตอบแทนและความเสี่ยง (60/40 Portfolio)"
+            data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
+                    "สัดส่วน": ["60%", "25%", "25%"]}
+        elif "4" in profile: # Moderate Aggressive
+            advice = "เน้นสร้างความมั่งคั่งในระยะยาว ยอมรับความผันผวนได้สูง"
+            data = {"สินทรัพย์": ["ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
+                    "สัดส่วน": ["50%", "30%", "20%"]}
+        else: # 5: Aggressive
+            advice = "เน้นการเติบโตสูงสุด ยอมรับการขาดทุนชั่วคราวได้ในระดับสูงมาก"
+            data = {"สินทรัพย์": ["ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
+                    "สัดส่วน": ["40%", "40%", "20%"]}
+
+        st.info(f"💡 **คำแนะนำ:** {advice}")
+        st.table(data)
+        if st.button("ยืนยันผลประเมินและไปหน้าถัดไป ➡",type="primary",use_container_width=True):
+            next_step() 
+            st.rerun()
+
     # --- RENDER QUESTIONS ---
     total_score = 0
     all_answered = True
@@ -1223,24 +1309,36 @@ elif st.session_state["current_step"] == 1:
 
     # --- SCORING ---
     if all_answered:
+    # แบ่งช่วงคะแนนเป็น 5 ระดับ (อิงตามมาตรฐานสมาคมบริษัทจัดการลงทุน)
         if total_score >= 26:
-            profile = "Aggressive (เชิงรุก)"
-        elif total_score >= 16:
-            profile = "Moderate (ปานกลาง)"
+            profile = "ระดับ 5: เสี่ยงสูงมาก (Aggressive)"
+        elif total_score >= 22:
+            profile = "ระดับ 4: เสี่ยงสูง (Moderate Aggressive)"
+        elif total_score >= 18:
+            profile = "ระดับ 3: เสี่ยงปานกลางค่อนข้างสูง (Moderate)"
+        elif total_score >= 14:
+            profile = "ระดับ 2: เสี่ยงปานกลางค่อนข้างต่ำ (Moderate Conservative)"
         else:
-            profile = "Conservative (ระมัดระวัง)"
+            profile = "ระดับ 1: เสี่ยงต่ำ (Conservative)"
         st.success(f"คะแนน: {total_score} - {profile}")
         
         # Save profile for later use
         st.session_state["risk_profile"] = profile
         st.session_state["risk_score"] = total_score
 
-    c1, c2 = st.columns([1, 8])
-    with c1:
-        st.button("⬅ Back", on_click=prev_step)
-    with c2:
-        st.button("Next Step ➡", on_click=next_step, type="primary", disabled=not all_answered)
-
+        c1, c2 = st.columns([1, 8])
+        with c1:
+            st.button("⬅ Back", on_click=prev_step)
+        with c2:
+            if st.button("Next Step ➡", type="primary", disabled=not all_answered):
+                show_risk_advice()
+    else:
+    # หน้าอื่นๆ (เช่น หน้า 1) ให้ใช้ปุ่ม Next ปกติที่เรียก next_step โดยตรง
+        c1, c2 = st.columns([1, 8])
+        with c1:
+            st.button("⬅ Back", on_click=prev_step)
+        with c2:
+            st.button("Next Step ➡", on_click=next_step, type="primary")
 # =========================================================
 # PAGE 3: ASSET ALLOCATION (Clean Input Version)
 # =========================================================
@@ -1250,28 +1348,31 @@ elif st.session_state["current_step"] == 2:
     curr_cash     = st.session_state.get("v_cash_dep", 0.0)
     curr_bond     = st.session_state.get("v_bond", 0.0)
     curr_stock    = st.session_state.get("v_stock", 0.0)
+    curr_reit     = st.session_state.get("v_reit", 0.0)
+    curr_gl_bond  = st.session_state.get("v_gl_bond", 0.0)
     curr_gl_stock = st.session_state.get("v_gl_stock", 0.0)
-    curr_other    = st.session_state.get("v_other_invest", 0.0) 
-    
-    val_deposit = money_input("Fix Deposit (THB)", curr_cash, "p3_deposit")
+    curr_gl_reit  = st.session_state.get("v_gl_reit", 0.0)
+    curr_gold     = st.session_state.get("v_gold_invest", 0.0)
 
+    # --- การเรียกใช้ Widget ในหน้า 3 ---
+    # ใช้ key_suffix ใหม่ (เช่น p3_...) เพื่อไม่ให้ชนกับหน้า 1 
+    # แต่ส่งค่า curr_... ที่ดึงมาเป็นค่าเริ่มต้น
+    val_deposit = money_input("Fix Deposit (THB)", curr_cash, "p3_deposit")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Thai Assets")
-        val_gov_bond = money_input("Government Bond 1Y (THB)", curr_bond, "p3_gov_bond")
-        val_seti     = money_input("Thai Equity (THB)", curr_stock, "p3_seti")
-        val_xauthb   = money_input("Gold (XAUTHB) (THB)", 0.0, "p3_xauthb")
-        val_reitth   = money_input("Thai REITs (THB)", curr_other, "p3_reitth")
-
+        val_gov_bond = money_input("Government Bond (THB)", curr_bond, "p3_gov_bond")
+        val_seti     = money_input("Thai Stock (THB)", curr_stock, "p3_seti")
+        val_reit     = money_input("PF&REIT (THB)", curr_reit, "p3_reit")
     with c2:
         st.subheader("Global Assets")
-        val_msci_gov   = money_input("Global Govt Bond (THB)", 0.0, "p3_msci_gov")
+        val_msci_gov   = money_input("Global Government Bond (THB)", curr_gl_bond, "p3_msci_gov")
         val_msci_stock = money_input("Global Stock (THB)", curr_gl_stock, "p3_msci_stock")
-        val_xauusd     = money_input("Gold (XAUUSD) (THB)", 0.0, "p3_xauusd")
-        val_mscireits  = money_input("Global REITs (THB)", 0.0, "p3_mscireits")
+        val_msci_reits = money_input("Global REITs (THB)", curr_gl_reit, "p3_mscireits")
+        val_gold       = money_input("Gold (THB)", curr_gold, "p3_gold")
 
-    total_port_value = (val_deposit + val_gov_bond + val_seti + val_xauthb + val_reitth +
-                        val_msci_gov + val_msci_stock + val_xauusd + val_mscireits)
+    total_port_value = (val_deposit + val_gov_bond + val_seti + val_reit +
+                        val_msci_gov + val_msci_stock + val_msci_reits + val_gold)
 
     if total_port_value > 0:
         st.markdown(f"### 💰 Total Portfolio: **{total_port_value:,.0f}** THB")
@@ -1279,12 +1380,11 @@ elif st.session_state["current_step"] == 2:
             "pct_deposit": val_deposit / total_port_value,
             "pct_gov_bond": val_gov_bond / total_port_value,
             "pct_seti": val_seti / total_port_value,
-            "pct_XAUTHB": val_xauthb / total_port_value,
-            "pct_REITTH": val_reitth / total_port_value,
+            "pct_gold": val_gold / total_port_value,
+            "pct_REIT": val_reit / total_port_value,
             "pct_msci_gov_bond": val_msci_gov / total_port_value,
             "pct_msci_stock": val_msci_stock / total_port_value,
-            "pct_XAUUSD": val_xauusd / total_port_value,
-            "pct_MSCIREITs": val_mscireits / total_port_value
+            "pct_msci_reit":val_msci_reits/total_port_value
         }
         
         st.session_state["saved_alloc"] = alloc
@@ -1307,16 +1407,14 @@ elif st.session_state["current_step"] == 3:
     N_SIM = 50000
 
     asset_stats = {
-        "pct_deposit": {"mean": 0.0206, "std": 0.0125},
-        "pct_gov_bond": {"mean": 0.0505, "std": 0.0572},
-        "pct_seti": {"mean": 0.1227, "std": 0.3266},
-        "pct_XAUTHB": {"mean": 0.065, "std": 0.150},
-        "pct_REITTH": {"mean": 0.070, "std": 0.200},
-
-        "pct_msci_stock": {"mean": 0.0926, "std": 0.1852},
-        "pct_msci_gov_bond": {"mean": 0.0926, "std": 0.1852},
-        "pct_XAUUSD": {"mean": 0.1175, "std": 0.1752},
-        "pct_MSCIREITs": {"mean": 0.0926, "std": 0.1853}
+        "pct_deposit": {"mean": 0.0200, "std": 0.0100},
+        "pct_gov_bond": {"mean": 0.0348, "std": 0.0244},  
+        "pct_seti": {"mean": 0.0547, "std": 0.2729},     
+        "pct_REIT": {"mean": 0.0626, "std": 0.1119},     
+        "pct_msci_stock": {"mean": 0.0945, "std": 0.1564},
+        "pct_msci_gov_bond": {"mean": 0.0557, "std": 0.0983},
+        "pct_msci_reit": {"mean": 0.0626, "std": 0.1119},
+        "pct_gold": {"mean": 0.0836, "std": 0.1601}      
     }
 
     alloc = st.session_state.get("saved_alloc", {})
@@ -1341,15 +1439,13 @@ elif st.session_state["current_step"] == 3:
             "Select Option...": "ignore",
             "🔴 USD/THB Exchange Rate": "rate_usd_thb",  # <--- CRITICAL
             "-----------------------": "ignore",
-            "Fix Deposit": "pct_deposit",
-            "Thai Gov Bond": "pct_gov_bond",
+            "Thai Government Bond": "pct_gov_bond",
             "Thai Equity (SET)": "pct_seti",
-            "Gold (XAUTHB)": "pct_XAUTHB",
-            "Thai REITs": "pct_REITTH",
+            "Thai REITs": "pct_REIT",
             "Global Stocks (MSCI)": "pct_msci_stock",
             "Global Bond": "pct_msci_gov_bond",
-            "Gold (USD)": "pct_XAUUSD",
-            "Global REITs": "pct_MSCIREITs"
+            "Global REITs": "pct_msci_reit",
+            "Gold":"pct_gold"
         }
         
         if uploaded_files:
@@ -1488,6 +1584,8 @@ elif st.session_state["current_step"] == 3:
     start_port = st.session_state.get("start_port", 1_000_000.0)
     inflation = st.session_state.get("inflation", 0.03)
     retire_age = st.session_state.get("retire_age", 60)
+    inheritance = st.session_state.get("inheritance_goal", 0.0)
+
 
     # =========================
     # 1) RUN SIMULATION (generate returns once, reuse later)
@@ -1496,7 +1594,7 @@ elif st.session_state["current_step"] == 3:
         sim = RetirementSimulator()
         with st.spinner("Simulating..."):
             mc_returns = sim.simulate_returns(alloc, asset_stats, N_SIM, YEARS)
-            st.session_state["mc_returns"] = mc_returns  
+            st.session_state["mc_returns"] = mc_returns 
 
             res = sim.run_simulation(
                 initial_portfolio=start_port,
@@ -1507,7 +1605,8 @@ elif st.session_state["current_step"] == 3:
                 n_simulations=N_SIM,
                 years=YEARS,
                 inflation_rate=inflation,
-                starting_age=retire_age)
+                starting_age=retire_age,
+                inheritance_goal=inheritance)
 
         st.session_state["res"] = res
         st.session_state["sim_strat"] = strat_selection
@@ -1622,6 +1721,26 @@ elif st.session_state["current_step"] == 3:
     # =========================================================
     st.divider()
     st.subheader("💾 Save Your Plan")
+    # 1. ฟังก์ชันช่วยดึงค่าเพื่อ Export เป็นรายปี
+    def get_annual_safe(key_suffix):
+        # 1. ดึงค่าตัวเลข (ลองหาทั้ง v_prefix และไม่มี)
+        val = st.session_state.get(f"v_{key_suffix}")
+        if val is None:
+            val = st.session_state.get(key_suffix, 0.0)
+        
+        # แปลงเป็น float เสมอ (กันกรณีเป็น string หรือ None)
+        try:
+            val = float(val)
+        except:
+            val = 0.0
+
+        # 2. ดึงหน่วยเวลา (ล้อตามฟังก์ชัน cashflow_input ของคุณ)
+        freq = st.session_state.get(f"freq_{key_suffix}", "ต่อปี (Yearly)")
+        
+        # 3. ตรวจสอบเงื่อนไขตัวหนังสือ (เพราะใน Widget คุณใช้ภาษาไทยผสมอังกฤษ)
+        if freq and ("Monthly" in str(freq) or "เดือน" in str(freq)):
+            return val * 12
+        return val
 
     if st.button("✅ Prepare Export Files"):
         res = st.session_state.get("res")
@@ -1640,7 +1759,8 @@ elif st.session_state["current_step"] == 3:
             "life_exp": life_exp_final,
             "inflation": st.session_state.get("inflation", 0.03),
             "inheritance_goal": st.session_state.get("inheritance_goal", 0.0),
-            "sim_strat": strat_selection
+            "sim_strat": strat_selection,
+            "wd_rate": st.session_state.get("wd_rate",wd_rate)
         }
 
         # 2. Financial Calculations
@@ -1664,32 +1784,35 @@ elif st.session_state["current_step"] == 3:
             "net_worth": investable - total_debt,         
             # Detailed Breakdown for CSV
             "inc_detail": {
-                "Pension": get_num("inc_sal"),
-                "Rental": get_num("inc_rent"),
-                "Dividend": get_num("inc_div"),
-                "Other": get_num("inc_other")
+                "Pension": get_annual_safe("inc_sal"),
+                "Rental": get_annual_safe("inc_rent"),
+                "Dividend": get_annual_safe("inc_div"),
+                "Other": get_annual_safe("inc_other")
             },
             "exp_fixed_detail": {
-                "Loan": get_num("exp_loan"),
-                "Housing": get_num("exp_house"),
-                "Insurance": get_num("exp_ins"),
-                "Subscription": get_num("exp_sub"),
-                "Other Fixed": get_num("exp_fix_oth")
+                "Loan": get_annual_safe("exp_loan"),
+                "Housing": get_annual_safe("exp_house"),
+                "Insurance": get_annual_safe("exp_ins"),
+                "Subscription": get_annual_safe("exp_sub"),
+                "Other Fixed": get_annual_safe("exp_fix_oth")
             },
             "exp_var_detail": {
-                "Transport": get_num("exp_trans"),
-                "Food": get_num("exp_food"),
-                "Entertain": get_num("exp_ent"),
-                "Travel": get_num("exp_travel"),
-                "Health": get_num("exp_health"),
-                "Other Variable": get_num("exp_var_oth")
+                "Transport": get_annual_safe("exp_trans"),
+                "Food": get_annual_safe("exp_food"),
+                "Entertain": get_annual_safe("exp_ent"),
+                "Travel": get_annual_safe("exp_travel"),
+                "Health": get_annual_safe("exp_health"),
+                "Other Variable": get_annual_safe("exp_var_oth")
             },
-            "asset_detail": {
+           "asset_detail": {
                 "Cash": get_num("cash_dep"),
-                "Bond": get_num("bond"),
+                "Thai Bond": get_num("bond"),
+                "Global Bond": get_num("gl_bond"),
                 "Thai Equity": get_num("stock"),
                 "Global Equity": get_num("gl_stock"),
-                "Other Invest": get_num("other_invest")
+                "PF&REIT": get_num("reit"),
+                "Global REIT": get_num("gl_reit"),
+                "Gold": get_num("gold_invest")
             },
             "debt_detail": {
                 "Home Loan": get_num("debt_home"),
@@ -1716,9 +1839,9 @@ elif st.session_state["current_step"] == 3:
         )
     with c2:
         st.download_button(
-            "📕 Download PDF",
-            data=st.session_state.get("export_pdf_bytes", b""),
-            file_name="report.pdf",
+            "📕 Download Full Report PDF",
+            data=st.session_state.get("export_pdf_bytes")if st.session_state.get("export_pdf_bytes") is not None else b"",
+            file_name="full_retirement_report.pdf",
             mime="application/pdf",
             disabled=("export_pdf_bytes" not in st.session_state),
         )
