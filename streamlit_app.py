@@ -31,9 +31,9 @@ def show_disclaimer():
     if st.button("I understand (รับทราบ)"):
         st.rerun()
 
-    if "accepted_terms" not in st.session_state:
-        show_disclaimer()
-        st.session_state["accepted_terms"] = True
+if "accepted_terms" not in st.session_state:
+    show_disclaimer()
+    st.session_state["accepted_terms"] = True
 # =========================================================
 # CORE SIMULATION ENGINE
 # =========================================================
