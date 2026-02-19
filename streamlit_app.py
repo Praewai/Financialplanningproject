@@ -622,60 +622,238 @@ def build_full_report_csv(export_data, res, alloc, years=30):
     return out.getvalue().encode("utf-8-sig")
 
 def build_pdf_bytes(data, res):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    # --- กำหนดค่ามาตรฐานสำหรับตัวอักษร ---
+    FONT_REG = "Helvetica"
+    FONT_BOLD = "Helvetica-Bold"
+    SIZE_TITLE = 16
+    SIZE_SUB = 12
+    SIZE_LABEL = 10
+    SIZE_BODY = 10
+
+    # ==========================================
+    # PAGE 1: FINANCIAL HEALTH (เพิ่มระยะห่างบรรทัดให้โปร่งขึ้น)
+    # ==========================================
+    c.setFont(FONT_BOLD, SIZE_TITLE)
+    c.drawString(50, height - 50, "Financial Planning: User Health Report")
     
-    buf = io.BytesIO()
-    with PdfPages(buf) as pdf:
+    # --- SECTION A: Personal Information ---
+    y = height - 90
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawString(50, y, "A. Personal Information")
+    c.setFont(FONT_REG, SIZE_BODY)
+    y -= 25 
+    c.drawString(60, y, f"Name: {data.get('name', 'N/A')}")
+    c.drawString(250, y, f"Retire Age: {data.get('retire_age')} Years")
+    c.drawString(400, y, f"Life Expectancy: {data.get('life_exp')} Years")
+    y -= 22 
+    c.drawString(60, y, f"Expected Inflation: {data.get('inflation', 0.03)*100:.2f}%")
+    c.drawString(250, y, f"Inheritance Goal: {data.get('inheritance_goal', 0):,.2f} THB")
 
-        # Page 1
-        import matplotlib.pyplot as plt
-        f1, a1 = plt.subplots(figsize=(8, 11))
-        a1.axis("off")
-        a1.set_title("Financial Report", fontsize=18, fontweight="bold", pad=20)
+    # --- SECTION B: Investable Assets ---
+    y -= 40
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawString(50, y, "B. Investable Assets")
+    c.setFont(FONT_REG, SIZE_BODY)
+    y -= 25
+    asset_data = data.get("asset_detail", {})
+    col_y = y
+    for i, (k, v) in enumerate(asset_data.items()):
+        if v > 0:
+            c.drawString(60 if i % 2 == 0 else 300, col_y, f"- {k}: {v:,.2f} THB")
+            if i % 2 != 0 or i == len(asset_data)-1: col_y -= 22 
+    
+    y = col_y - 12 # เพิ่มระยะช่องว่างก่อนบรรทัดยอดรวม
+    c.setFont(FONT_BOLD, SIZE_BODY)
+    c.drawString(60, y, f"Total Investable Assets: {data.get('investable', 0):,.2f} THB")
 
-        y = 0.85
-        a1.text(0.1, y, f"Name: {data['name']}", fontsize=12, fontweight="bold"); y -= 0.03
-        a1.text(0.1, y, f"Retire Age: {data['retire_age']} | Life Exp: {data['life_exp']}", fontsize=11); y -= 0.05
+    # --- SECTION C: Debt Summary  ---
+    y -= 45 
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawString(50, y, "C. Debt Summary")
+    
+    # วาดรายการหนี้ย่อย
+    c.setFont(FONT_REG, SIZE_BODY)
+    y_current = y - 25
+    debt_data = data.get("debt_detail", {})
+    
+    has_debt = False
+    for k, v in debt_data.items():
+        if v > 0:
+            c.drawString(60, y_current, f"- {k}: {v:,.2f} THB")
+            y_current -= 22 # ระยะห่างระหว่างรายการหนี้แต่ละบรรทัด
+            has_debt = True
+    
+    if not has_debt:
+        c.drawString(60, y_current, "- No outstanding debt")
+        y_current -= 22
 
-        a1.text(0.1, y, "SUMMARY", fontsize=12, fontweight="bold"); y -= 0.04
-        a1.text(0.1, y, f"Investable Assets: {data['investable']:,.0f} THB", fontsize=11); y -= 0.03
-        a1.text(0.1, y, f"Total Debt: {data['total_debt']:,.0f} THB", fontsize=11); y -= 0.03
-        a1.text(0.1, y, f"Yearly Savings: {data['yearly_savings']:,.0f} THB", fontsize=11); y -= 0.03
-        a1.text(0.1, y, f"Net Worth: {data['net_worth']:,.0f} THB", fontsize=11); y -= 0.05
+    # บรรทัด Total Liabilities (เว้นระยะห่างจากรายการสุดท้าย 15 หน่วย)
+    y_debt_total = y_current - 15 
+    c.setFont(FONT_BOLD, SIZE_BODY)
+    c.drawString(60, y_debt_total, f"Total Liabilities: {data.get('total_debt', 0):,.2f} THB")
 
-        details = [
-            ["Total Income", f"{data['total_income']:,.0f}"],
-            ["Total Expense", f"{data['total_expense']:,.0f}"],
-        ]
-        t1 = a1.table(cellText=details, colLabels=["Item", "THB"], bbox=[0.1, 0.35, 0.8, 0.18])
-        t1.auto_set_font_size(False); t1.set_fontsize(10)
-        pdf.savefig(f1); plt.close(f1)
+    # --- SECTION D: Post-Retirement Cash Flow ---
+    # เริ่มต้น Section D โดยอ้างอิงจากตำแหน่งสุดท้ายของ Section C
+    y = y_debt_total - 45 
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawString(50, y, "D. Post-Retirement Cash Flow (Annual)")
+    
+    # Income Sources
+    y -= 25
+    c.setFont(FONT_BOLD, SIZE_LABEL)
+    c.drawString(60, y, "[Income Sources]")
+    c.setFont(FONT_REG, SIZE_BODY)
+    y_inc = y
+    for k, v in data.get("inc_detail", {}).items():
+        if v > 0:
+            y_inc -= 20 
+            c.drawString(75, y_inc, f"- {k}: {v:,.2f} THB")
+    
+    # Expenses Breakdown (เว้นระยะจาก Income เล็กน้อย)
+    y = y_inc - 30
+    c.setFont(FONT_BOLD, SIZE_LABEL)
+    c.drawString(60, y, "[Expenses Breakdown]")
+    c.setFont(FONT_REG, SIZE_BODY)
+    y_exp = y
+    all_exp = {**data.get("exp_fixed_detail", {}), **data.get("exp_var_detail", {})}
+    for k, v in all_exp.items():
+        if v > 0:
+            y_exp -= 20 
+            c.drawString(75, y_exp, f"- {k}: {v:,.2f} THB")
+            
+    # เตรียมตำแหน่งสำหรับ Financial Health Summary
+    y = y_exp - 45
 
-        # Page 2
-        if res is not None:
-            f2, a2 = plt.subplots(figsize=(8, 11))
-            a2.axis("off")
-            a2.set_title("Simulation Results", fontsize=16, pad=20)
+    c.setFont(FONT_BOLD, SIZE_LABEL)
+    c.drawString(60, y, "[Expenses Breakdown]")
+    c.setFont(FONT_REG, SIZE_BODY)
+    all_exp = {**data.get("exp_fixed_detail", {}), **data.get("exp_var_detail", {})}
+    for k, v in all_exp.items():
+        if v > 0:
+            y -= 20 
+            c.drawString(75, y, f"- {k}: {v:,.2f} THB")
+    y -= 45 
 
-            sim_table = [
-                ["Strategy", data.get("sim_strat", "-")],
-                ["Withdrawal Rate", f"{data.get('wd_rate', 0)*100:.2f}%"],
-                ["Success Rate", f"{res['survival_rate']*100:.1f}%"],
-                ["Median End Balance", f"{res['median_balance'][-1]:,.0f} THB"],
-            ]
-            t2 = a2.table(cellText=sim_table, colLabels=["Metric", "Result"], bbox=[0.1, 0.73, 0.8, 0.20])
-            t2.auto_set_font_size(False); t2.set_fontsize(10)
+    # --- Financial Health Summary (พร้อมรายเดือน) ---
+    c.setStrokeColorRGB(0.7, 0.7, 0.7)
+    c.line(50, y + 20, width - 50, y + 20)
+    
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawString(50, y, "Financial Health Summary")
+    
+    net_yearly = data.get('yearly_savings', 0)
+    net_monthly = net_yearly / 12
+    
+    y -= 30
+    c.setFont(FONT_REG, SIZE_BODY)
+    c.drawString(60, y, f"Net Worth: {data.get('net_worth', 0):,.2f} THB")
+    c.drawString(300, y, f"Net Cashflow/Year: {net_yearly:,.2f} THB")
+    
+    y -= 20
+    if net_monthly < 0:
+        c.setFillColorRGB(0.8, 0, 0) # สีแดงถ้าติดลบ
+    c.drawString(300, y, f"Net Cashflow/Month: {net_monthly:,.2f} THB")
+    c.setFillColorRGB(0, 0, 0) 
 
-            ax = f2.add_axes([0.1, 0.12, 0.8, 0.50])
-            x = range(len(res["median_balance"]))
-            ax.fill_between(x, res["percentile_10"], res["percentile_90"], alpha=0.2)
-            ax.plot(x, res["median_balance"])
-            ax.set_title("Wealth Projection")
-            ax.set_xlabel("Year")
-            ax.set_ylabel("Portfolio Value (THB)")
+    c.setFont(FONT_REG, 8)
+    c.drawString(width/2 - 20, 30, "Page 1 of 2")
+    c.showPage() 
 
-            pdf.savefig(f2); plt.close(f2)
+    # ==========================================
+    # PAGE 2: ASSET PIE CHART & MONTE CARLO
+    # ==========================================
+    y_top = height - 50
+    c.setFont(FONT_BOLD, SIZE_TITLE)
+    c.drawString(50, y_top, "Asset Allocation & Simulation Result")
 
-    return buf.getvalue()
+    # --- 4. Asset Allocation ---
+    y_pie_section = y_top - 45
+    c.setFont(FONT_BOLD, SIZE_SUB)
+    c.drawString(50, y_pie_section, "4. Asset Allocation Details")
+    
+    asset_data = data.get("asset_detail", {})
+    labels = [k for k, v in asset_data.items() if v > 0]
+    values = [v for k, v in asset_data.items() if v > 0]
+    
+    if values:
+        fig_pie, ax_pie = plt.subplots(figsize=(4, 4))
+        ax_pie.pie(values, labels=labels, autopct='%1.1f%%', startangle=140)
+        img_buf_pie = io.BytesIO()
+        plt.savefig(img_buf_pie, format='png', transparent=True)
+        plt.close(fig_pie)
+        c.drawImage(ImageReader(img_buf_pie), 30, y_pie_section - 210, width=220, height=220)
+
+    # Asset List side by side
+    y_alist = y_pie_section - 50
+    c.setFont(FONT_BOLD, SIZE_LABEL)
+    c.drawString(280, y_alist, "[Current Asset Value]")
+    c.setFont(FONT_REG, SIZE_BODY)
+    for k, v in asset_data.items():
+        if v > 0:
+            y_alist -= 18
+            c.drawString(290, y_alist, f"- {k}: {v:,.2f} THB")
+
+    # --- 5. Wealth Projection & Simulation Stats ---
+    y_graph = y_pie_section - 250
+    if res is not None:
+        c.setFont(FONT_BOLD, SIZE_SUB)
+        c.drawString(50, y_graph, "5. Wealth Projection (Monte Carlo Simulation)")
+        
+        # วาดกราฟ (ขนาดปรับให้พอดี)
+        fig_mc, ax_mc = plt.subplots(figsize=(10, 4))
+        x_range = range(len(res["median_balance"]))
+        ax_mc.fill_between(x_range, res["percentile_10"], res["percentile_90"], alpha=0.2, label="10-90th Pctl")
+        ax_mc.plot(x_range, res["median_balance"], label="Median Balance", linewidth=2, color='blue')
+        ax_mc.axhline(0, color='red', linestyle="--")
+        
+        inh_goal = data.get("inheritance_goal", 0.0)
+        if inh_goal > 0:
+            ax_mc.axhline(inh_goal, color='purple', linestyle="-.", label=f"Goal ({inh_goal:,.0f})")
+
+        ax_mc.legend(loc='upper left', fontsize='small')
+        ax_mc.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
+        
+        img_buf_mc = io.BytesIO()
+        plt.savefig(img_buf_mc, format='png', dpi=120)
+        plt.close(fig_mc)
+        c.drawImage(ImageReader(img_buf_mc), 50, y_graph - 230, width=500, height=220)
+
+        # --- ส่วนที่เพิ่ม: Simulation Results Summary ---
+        y_sim_stats = y_graph - 260
+        c.setStrokeColorRGB(0.7, 0.7, 0.7)
+        c.line(50, y_sim_stats + 15, width - 50, y_sim_stats + 15) # ขีดเส้นคั่น
+        
+        c.setFont(FONT_BOLD, SIZE_SUB)
+        c.drawString(50, y_sim_stats, "Simulation Outcome Summary")
+        
+        # สรุปตัวเลขสำคัญ (Survival Rate, Median End Balance)
+        c.setFont(FONT_REG, SIZE_BODY)
+        y_sim_stats -= 25
+        
+        success_rate = res.get("survival_rate", 0) * 100
+        median_end = res["median_balance"][-1] if "median_balance" in res else 0
+        inh_success = res.get("inheritance_success_rate", 0.0) * 100
+        
+        # บรรทัดที่ 1: อัตราการอยู่รอด และ เงินคงเหลือมัธยฐาน
+        c.drawString(60, y_sim_stats, f"Survival Success Rate: {success_rate:.1f}%")
+        c.drawString(300, y_sim_stats, f"Median End Balance: {median_end:,.2f} THB")
+        
+        # บรรทัดที่ 2: อัตราความสำเร็จของมรดก และ กลยุทธ์ที่ใช้
+        y_sim_stats -= 20
+        c.drawString(60, y_sim_stats, f"Inheritance Success Rate: {inh_success:.1f}%")
+        c.drawString(300, y_sim_stats, f"Withdrawal Strategy: {data.get('sim_strat')}")
+
+        # บรรทัดที่ 3: อัตราการถอน และ เงินเฟ้อ
+        y_sim_stats -= 20
+        c.drawString(60, y_sim_stats, f"Withdrawal Rate (WD): {data.get('wd_rate', 0)*100:.2f}%")
+        c.drawString(300, y_sim_stats, f"Expected Inflation: {data.get('inflation', 0.03)*100:.2f}%")
+
+        c.save()
+        return buffer.getvalue()
 
 def parse_bloomberg_file(uploaded_file):
     try:
