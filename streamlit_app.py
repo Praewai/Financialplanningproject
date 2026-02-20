@@ -1361,16 +1361,16 @@ elif st.session_state["current_step"] == 2:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Thai Assets")
-        val_gov_bond = money_input("Government Bond (THB)", curr_bond, "p3_gov_bond")
-        val_seti     = money_input("Thai Stock (THB)", curr_stock, "p3_seti")
-        val_reit     = money_input("PF&REIT (THB)", curr_reit, "p3_reit")
+        val_gov_bond = money_input("Government Bond (THB) - THAT Index", curr_bond, "p3_gov_bond")
+        val_seti     = money_input("Thai Stock (THB) - SET Index", curr_stock, "p3_seti")
+        val_reit     = money_input("PF&REIT (THB) - SETPREIT Index  ", curr_reit, "p3_reit")
     with c2:
         st.subheader("Global Assets")
-        val_msci_gov   = money_input("Global Government Bond (THB)", curr_gl_bond, "p3_msci_gov")
-        val_msci_stock = money_input("Global Stock (THB)", curr_gl_stock, "p3_msci_stock")
-        val_msci_reits = money_input("Global REITs (THB)", curr_gl_reit, "p3_mscireits")
-        val_gold       = money_input("Gold (THB)", curr_gold, "p3_gold")
-
+        val_msci_gov   = money_input("Global Government Bond (THB) - LEGATRUU Index", curr_gl_bond, "p3_msci_gov")
+        val_msci_stock = money_input("Global Stock (THB) - MXWD Index ", curr_gl_stock, "p3_msci_stock")
+        val_msci_reits = money_input("Global REITs (THB) - NDUWREIT Index", curr_gl_reit, "p3_mscireits")
+        val_gold       = money_input("Gold (THB) - XAUTHB", curr_gold, "p3_gold")
+        
     total_port_value = (val_deposit + val_gov_bond + val_seti + val_reit +
                         val_msci_gov + val_msci_stock + val_msci_reits + val_gold)
 
