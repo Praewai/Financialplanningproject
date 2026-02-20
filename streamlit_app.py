@@ -1357,7 +1357,7 @@ elif st.session_state["current_step"] == 2:
     # --- การเรียกใช้ Widget ในหน้า 3 ---
     # ใช้ key_suffix ใหม่ (เช่น p3_...) เพื่อไม่ให้ชนกับหน้า 1 
     # แต่ส่งค่า curr_... ที่ดึงมาเป็นค่าเริ่มต้น
-    val_deposit = money_input("Fix Deposit (THB)", curr_cash, "p3_deposit")
+    val_deposit = money_input("Deposit (THB)", curr_cash, "p3_deposit")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Thai Assets")
