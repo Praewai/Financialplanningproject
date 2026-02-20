@@ -4,3 +4,4 @@ numpy
 pandas
 reportlab
 pypdf
+openpyxl
