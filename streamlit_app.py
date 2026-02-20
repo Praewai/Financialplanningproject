@@ -1369,7 +1369,7 @@ elif st.session_state["current_step"] == 2:
         val_msci_gov   = money_input("Global Government Bond (THB) - LEGATRUU Index", curr_gl_bond, "p3_msci_gov")
         val_msci_stock = money_input("Global Stock (THB) - MXWD Index ", curr_gl_stock, "p3_msci_stock")
         val_msci_reits = money_input("Global REITs (THB) - NDUWREIT Index", curr_gl_reit, "p3_mscireits")
-        val_gold       = money_input("Gold (THB) - XAUTHB", curr_gold, "p3_gold")
+        val_gold       = money_input("Gold (THB) - XAUUSD", curr_gold, "p3_gold")
         
     total_port_value = (val_deposit + val_gov_bond + val_seti + val_reit +
                         val_msci_gov + val_msci_stock + val_msci_reits + val_gold)
