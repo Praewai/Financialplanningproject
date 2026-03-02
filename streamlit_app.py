@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 import csv
-import re
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
@@ -34,6 +33,7 @@ def show_disclaimer():
 if "accepted_terms" not in st.session_state:
     show_disclaimer()
     st.session_state["accepted_terms"] = True
+
 # =========================================================
 # CORE SIMULATION ENGINE
 # =========================================================
@@ -74,19 +74,55 @@ class RetirementSimulator:
             portfolio_returns[sim] = asset_returns @ weights
         return portfolio_returns
 
+    # ------------------------------------------------------------------
+    # Build a year-by-year net_withdrawal array that accounts for
+    # time-limited expenses dropping off (debts, fixed-term loans, etc.)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def build_cashflow_schedule(
+        base_annual_expense: float,
+        base_annual_income: float,
+        timed_items: list,        # [{"annual_amount": float, "years_remaining": int}, ...]
+        total_years: int,
+        inflation_rate: float,
+    ) -> np.ndarray:
+        """
+        Returns an array of shape (total_years,) with net withdrawal per year.
+        base_annual_expense already INCLUDES all timed items (so we subtract them
+        when they expire).
+        Inflation is applied to ALL cash-flow components.
+        """
+        schedule = np.zeros(total_years)
+        for yr in range(total_years):
+            # Permanent expense reduced by expired timed items
+            expired_reduction = sum(
+                item["annual_amount"] for item in timed_items
+                if item["years_remaining"] <= yr          # expired by this year
+            )
+            net_expense = (base_annual_expense - expired_reduction) * (1 + inflation_rate) ** yr
+            net_income  = base_annual_income * (1 + inflation_rate) ** yr
+            schedule[yr] = max(0.0, net_expense - net_income)
+        return schedule
+
     # -------------------------
-    # STRATEGIES (ALL return balances + withdrawals)
+    # STRATEGIES
     # -------------------------
-    def basic_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years):
+    def basic_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years,
+                       cashflow_schedule=None):
         portfolio_value = initial_portfolio
-        withdrawal = initial_portfolio * withdrawal_rate
+        withdrawal = initial_portfolio * withdrawal_rate if cashflow_schedule is None else cashflow_schedule[0]
 
         balances = [portfolio_value]
         withdrawals = []
 
         for year in range(years):
-            withdrawals.append(max(0.0, withdrawal))
-            portfolio_value -= withdrawal
+            if cashflow_schedule is not None:
+                wd = cashflow_schedule[year] if year < len(cashflow_schedule) else 0.0
+            else:
+                wd = withdrawal
+
+            withdrawals.append(max(0.0, wd))
+            portfolio_value -= wd
 
             if portfolio_value <= 0:
                 balances.extend([0.0] * (years - year))
@@ -95,21 +131,29 @@ class RetirementSimulator:
 
             portfolio_value *= (1 + returns[year])
             balances.append(max(0.0, portfolio_value))
-            withdrawal *= (1 + inflation_rate)
+
+            if cashflow_schedule is None:
+                withdrawal *= (1 + inflation_rate)
 
         return balances, withdrawals
 
-    def forgoing_inflation_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years):
+    def forgoing_inflation_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years,
+                                    cashflow_schedule=None):
         portfolio_value = initial_portfolio
-        withdrawal = initial_portfolio * withdrawal_rate
+        withdrawal = initial_portfolio * withdrawal_rate if cashflow_schedule is None else cashflow_schedule[0]
 
         balances = [portfolio_value]
         withdrawals = []
         prev_balance = portfolio_value
 
         for year in range(years):
-            withdrawals.append(max(0.0, withdrawal))
-            portfolio_value -= withdrawal
+            if cashflow_schedule is not None:
+                wd = cashflow_schedule[year] if year < len(cashflow_schedule) else 0.0
+            else:
+                wd = withdrawal
+
+            withdrawals.append(max(0.0, wd))
+            portfolio_value -= wd
 
             if portfolio_value <= 0:
                 balances.extend([0.0] * (years - year))
@@ -119,13 +163,15 @@ class RetirementSimulator:
             portfolio_value *= (1 + returns[year])
             balances.append(max(0.0, portfolio_value))
 
-            if portfolio_value > prev_balance:
-                withdrawal *= (1 + inflation_rate)
-            prev_balance = portfolio_value
+            if cashflow_schedule is None:
+                if portfolio_value > prev_balance:
+                    withdrawal *= (1 + inflation_rate)
+                prev_balance = portfolio_value
 
         return balances, withdrawals
 
-    def rmd_strategy(self, initial_portfolio, starting_age, returns, years):
+    def rmd_strategy(self, initial_portfolio, starting_age, returns, years,
+                     cashflow_schedule=None):
         portfolio_value = initial_portfolio
         current_age = starting_age
 
@@ -134,10 +180,16 @@ class RetirementSimulator:
 
         for year in range(years):
             life_exp = self.get_life_expectancy(current_age)
-            withdrawal = portfolio_value / life_exp if life_exp > 0 else portfolio_value
+            wd_rmd = portfolio_value / life_exp if life_exp > 0 else portfolio_value
 
-            withdrawals.append(max(0.0, withdrawal))
-            portfolio_value -= withdrawal
+            # If a cashflow schedule exists, use its floor as minimum withdrawal
+            if cashflow_schedule is not None:
+                wd = max(wd_rmd, cashflow_schedule[year] if year < len(cashflow_schedule) else 0.0)
+            else:
+                wd = wd_rmd
+
+            withdrawals.append(max(0.0, wd))
+            portfolio_value -= wd
 
             if portfolio_value <= 0:
                 balances.extend([0.0] * (years - year))
@@ -150,17 +202,23 @@ class RetirementSimulator:
 
         return balances, withdrawals
 
-    def guardrails_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years):
+    def guardrails_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years,
+                            cashflow_schedule=None):
         portfolio_value = initial_portfolio
-        withdrawal = initial_portfolio * withdrawal_rate
+        withdrawal = initial_portfolio * withdrawal_rate if cashflow_schedule is None else cashflow_schedule[0]
         initial_rate = withdrawal_rate
 
         balances = [portfolio_value]
         withdrawals = []
 
         for year in range(years):
-            withdrawals.append(max(0.0, withdrawal))
-            portfolio_value -= withdrawal
+            if cashflow_schedule is not None:
+                wd = cashflow_schedule[year] if year < len(cashflow_schedule) else 0.0
+            else:
+                wd = withdrawal
+
+            withdrawals.append(max(0.0, wd))
+            portfolio_value -= wd
 
             if portfolio_value <= 0:
                 balances.extend([0.0] * (years - year))
@@ -170,18 +228,19 @@ class RetirementSimulator:
             portfolio_value *= (1 + returns[year])
             balances.append(max(0.0, portfolio_value))
 
-            current_rate = withdrawal / portfolio_value if portfolio_value > 0 else 0.0
-            if current_rate < initial_rate * 0.8:
-                withdrawal *= 1.10
-            elif current_rate > initial_rate * 1.2:
-                withdrawal *= 0.90
-            else:
-                withdrawal *= (1 + inflation_rate)
+            if cashflow_schedule is None:
+                current_rate = withdrawal / portfolio_value if portfolio_value > 0 else 0.0
+                if current_rate < initial_rate * 0.8:
+                    withdrawal *= 1.10
+                elif current_rate > initial_rate * 1.2:
+                    withdrawal *= 0.90
+                else:
+                    withdrawal *= (1 + inflation_rate)
 
         return balances, withdrawals
 
     # -------------------------
-    # RUN SIMULATION (pad arrays properly)
+    # RUN SIMULATION
     # -------------------------
     def run_simulation(
         self,
@@ -193,12 +252,13 @@ class RetirementSimulator:
         years,
         inflation_rate,
         starting_age,
-        inheritance_goal,
-        returns_override=None, 
-        n_simulations=50000
-        ):
+        inheritance_goal=0.0,
+        returns_override=None,
+        n_simulations=50000,
+        cashflow_schedule=None,   # NEW: optional year-by-year net withdrawal array
+    ):
         returns = returns_override if returns_override is not None else self.simulate_returns(
-        portfolio_allocation, asset_stats, n_simulations, years
+            portfolio_allocation, asset_stats, n_simulations, years
         )
 
         strategy_map = {
@@ -214,11 +274,13 @@ class RetirementSimulator:
         for sim in range(n_simulations):
             if withdrawal_strategy == "RMD Strategy":
                 balances, wds = strategy_map[withdrawal_strategy](
-                initial_portfolio, starting_age, returns[sim], years
+                    initial_portfolio, starting_age, returns[sim], years,
+                    cashflow_schedule=cashflow_schedule
                 )
             else:
                 balances, wds = strategy_map[withdrawal_strategy](
-                    initial_portfolio, withdrawal_rate, inflation_rate, returns[sim], years
+                    initial_portfolio, withdrawal_rate, inflation_rate, returns[sim], years,
+                    cashflow_schedule=cashflow_schedule
                 )
 
             if len(balances) < years + 1:
@@ -234,8 +296,8 @@ class RetirementSimulator:
             all_balances.append(balances)
             all_withdrawals.append(wds)
 
-        all_balances = np.array(all_balances, dtype=float)       # (sim, years+1)
-        all_withdrawals = np.array(all_withdrawals, dtype=float) # (sim, years)
+        all_balances    = np.array(all_balances, dtype=float)
+        all_withdrawals = np.array(all_withdrawals, dtype=float)
 
         final_values = all_balances[:, -1]
 
@@ -246,15 +308,11 @@ class RetirementSimulator:
             "percentile_10": np.percentile(all_balances, 10, axis=0),
             "percentile_90": np.percentile(all_balances, 90, axis=0),
             "returns_mean": float(np.mean(returns)),
-
             "median_withdrawal": np.median(all_withdrawals, axis=0),
             "withdrawal_p10": np.percentile(all_withdrawals, 10, axis=0),
             "withdrawal_p90": np.percentile(all_withdrawals, 90, axis=0),
         }
 
-    # -------------------------
-    # RECOMMENDATIONS (fix key mismatch)
-    # -------------------------
     def recommend_improvements(self, current_survival_rate, portfolio_allocation, withdrawal_rate, min_survival_rate=0.85):
         recs = []
         if current_survival_rate >= min_survival_rate:
@@ -264,8 +322,7 @@ class RetirementSimulator:
             rec_rate = withdrawal_rate * 0.9
             recs.append(f"📉 **Reduce Spending:** Try lowering withdrawal from {withdrawal_rate*100:.1f}% to {rec_rate*100:.1f}%.")
 
-        # equity-ish keys in YOUR alloc
-        equity_keys = ["pct_seti", "pct_msci_stock","pct_REITTH","pct_MSCIREITs"]
+        equity_keys = ["pct_seti", "pct_msci_stock", "pct_REIT", "pct_msci_reit"]
         equity_weight = sum(float(portfolio_allocation.get(k, 0)) for k in equity_keys)
 
         if equity_weight < 0.4:
@@ -280,9 +337,6 @@ class RetirementSimulator:
 
         return recs
 
-    # -------------------------
-    # OPTIMIZER (wd_rate only)
-    # -------------------------
     def find_optimal_withdrawal_rate(
         self,
         initial_portfolio,
@@ -293,8 +347,10 @@ class RetirementSimulator:
         years,
         inflation_rate,
         starting_age,
+        inheritance_goal=0.0,
         min_survival_rate=0.85,
         n_simulations=50000,
+        cashflow_schedule=None,
     ):
         low_rate = 0.01
         high_rate = min(0.12, max(0.06, initial_rate * 2))
@@ -315,7 +371,9 @@ class RetirementSimulator:
                 years,
                 inflation_rate,
                 starting_age,
-                n_simulations=n_simulations
+                inheritance_goal=inheritance_goal,
+                n_simulations=n_simulations,
+                cashflow_schedule=cashflow_schedule,
             )
             if results["survival_rate"] >= min_survival_rate:
                 best_rate = test_rate
@@ -324,7 +382,7 @@ class RetirementSimulator:
                 high_rate = test_rate
 
         return best_rate
-    
+
     def sensitivity_withdrawal_rate(
         self,
         initial_portfolio,
@@ -335,7 +393,9 @@ class RetirementSimulator:
         years,
         inflation_rate,
         starting_age,
+        inheritance_goal=0.0,
         n_simulations=50000,
+        cashflow_schedule=None,
     ):
         results = []
         for wd in wd_grid:
@@ -349,7 +409,9 @@ class RetirementSimulator:
                 years=years,
                 inflation_rate=inflation_rate,
                 starting_age=starting_age,
-                returns_override=None,  # ✅ reuse
+                inheritance_goal=inheritance_goal,
+                returns_override=None,
+                cashflow_schedule=cashflow_schedule,
             )
             results.append({
                 "withdrawal_rate": wd,
@@ -357,6 +419,7 @@ class RetirementSimulator:
                 "median_end_balance": float(res["median_balance"][-1]),
             })
         return results
+
 # =========================================================
 # UI HELPER FUNCTIONS
 # =========================================================
@@ -382,104 +445,136 @@ def jump_step():
     st.session_state["current_step"] = steps.index(st.session_state["nav_radio"])
 
 def money_input(label, default_val, key_suffix):
-    # --- KEYS ---
-    data_key = f"v_{key_suffix}"    # Stores Float (e.g., 1000000.0)
-    fmt_key = f"fmt_{key_suffix}"   # Stores String (e.g., "1,000,000")
-    ui_key = f"ui_{key_suffix}"     # Widget Key (Temporary UI)
+    data_key = f"v_{key_suffix}"
+    fmt_key  = f"fmt_{key_suffix}"
+    ui_key   = f"ui_{key_suffix}"
 
-    # --- INITIALIZATION (Run once) ---
     if data_key not in st.session_state:
         val = float(default_val)
         st.session_state[data_key] = val
-        st.session_state[fmt_key] = f"{val:,.0f}"
+        st.session_state[fmt_key]  = f"{val:,.0f}"
 
-
-    # --- SYNC FUNCTION (The Magic Fix) ---
     def on_change():
-        # 1. Get what the user typed
         user_input = st.session_state.get(ui_key, "0")
-        
         try:
-            # 2. Clean it (remove commas, spaces)
             clean_val = float(str(user_input).replace(",", "").strip())
         except:
             clean_val = 0.0
-            
-        # 3. Save the Float (for calculations)
         st.session_state[data_key] = clean_val
-        
-        # 4. Format it with commas (for display)
         formatted_str = f"{clean_val:,.0f}"
         st.session_state[fmt_key] = formatted_str
-        
-        # 5. FORCE THE WIDGET TO UPDATE IMMEDIATELY
-        # This makes the comma appear instantly when you press Enter
-        st.session_state[ui_key] = formatted_str
+        st.session_state[ui_key]  = formatted_str
 
-    # --- RENDER WIDGET ---
-    st.text_input(
-        label,
-        value=st.session_state[fmt_key],  # Load saved formatted text
-        key=ui_key,                       # Unique UI key
-        on_change=on_change
-    )
-    
+    st.text_input(label, value=st.session_state[fmt_key], key=ui_key, on_change=on_change)
     return st.session_state[data_key]
 
 def pct_input(label, key):
-    # 1. PERMANENT STORAGE KEY
     data_key = f"p_{key}"
-    
-    # Initialize if missing
     if data_key not in st.session_state:
         st.session_state[data_key] = 0.0
 
-    # 2. SYNC FUNCTION
     def on_change():
-        widget_key = f"ui_{key}"
-        # Copy widget value to permanent storage
-        st.session_state[data_key] = st.session_state[widget_key]
+        st.session_state[data_key] = st.session_state[f"ui_{key}"]
 
-    # 3. RENDER WIDGET
-    st.number_input(
-        f"{label} (%)",
-        min_value=0.0,
-        max_value=100.0,
-        value=float(st.session_state[data_key]), # <--- Loads saved data
-        step=5.0,
-        key=f"ui_{key}",  # <--- Unique UI key
-        format="%.1f",
-        on_change=on_change
-    )
-    
+    st.number_input(f"{label} (%)", min_value=0.0, max_value=100.0,
+                    value=float(st.session_state[data_key]), step=5.0,
+                    key=f"ui_{key}", format="%.1f", on_change=on_change)
     return st.session_state[data_key]
 
 def get_val_num(key_suffix):
     return float(st.session_state.get(f"v_{key_suffix}", 0.0))
-def get_num(key_suffix):
-    # This grabs the PERMANENT data key we created above
-    return float(st.session_state.get(f"v_{key_suffix}", 0.0))
-def name_input(label, key):
-    # 1. PERMANENT STORAGE KEY (e.g., "v_user_name")
-    data_key = f"v_{key}"
-    widget_key = f"ui_{key}"
 
-    # Initialize if missing
+def get_num(key_suffix):
+    return float(st.session_state.get(f"v_{key_suffix}", 0.0))
+
+def name_input(label, key):
+    data_key   = f"v_{key}"
+    widget_key = f"ui_{key}"
     if data_key not in st.session_state:
         st.session_state[data_key] = ""
 
-    # 2. SYNC FUNCTION (Widget -> Storage)
     def on_change():
         st.session_state[data_key] = st.session_state[widget_key]
 
-    # 3. RENDER WIDGET
-    st.text_input(
-        label,
-        value=st.session_state[data_key],  # <--- Loads saved name
-        key=widget_key,                    # <--- Unique UI key
-        on_change=on_change
-    )
+    st.text_input(label, value=st.session_state[data_key], key=widget_key, on_change=on_change)
     return st.session_state[data_key]
+
+# =========================================================
+# NEW HELPER: timed_expense_input
+# Renders an expense row WITH an optional "หมดภาระใน" duration picker.
+# Returns (annual_amount, years_remaining) where years_remaining=None means permanent.
+# =========================================================
+def timed_expense_input(label, key_suffix, show_timer=True):
+    """
+    Renders:  [Label]  [Amount]  [Monthly/Yearly]  [⏱ เลือกระยะเวลา toggle]
+    If timer is on:    [จำนวน]  [งวด unit selector]
+    Returns (annual_amount: float, years_remaining: float | None)
+    """
+    # ---- keys ----
+    freq_key    = f"freq_{key_suffix}"
+    timer_key   = f"timer_on_{key_suffix}"
+    dur_key     = f"dur_{key_suffix}"
+    unit_key    = f"unit_{key_suffix}"
+
+    options_freq = ["ต่อเดือน (Monthly)", "ต่อปี (Yearly)"]
+    options_unit = ["เดือน (Months)", "ปี (Years)"]
+
+    if freq_key  not in st.session_state: st.session_state[freq_key]  = options_freq[0]
+    if timer_key not in st.session_state: st.session_state[timer_key] = False
+    if dur_key   not in st.session_state: st.session_state[dur_key]   = 12
+    if unit_key  not in st.session_state: st.session_state[unit_key]  = "เดือน (Months)"
+
+    # Row 1: label | amount | freq | timer toggle
+    col_lbl, col_amt, col_freq, col_toggle = st.columns([2, 2, 2, 1], vertical_alignment="center")
+
+    with col_lbl:
+        st.markdown(f"**{label}**")
+
+    with col_amt:
+        amount = money_input("", 0, key_suffix)
+
+    with col_freq:
+        cur_freq_idx = options_freq.index(st.session_state[freq_key]) if st.session_state[freq_key] in options_freq else 0
+        st.radio("", options_freq, index=cur_freq_idx, horizontal=True,
+                 key=f"widget_{freq_key}", label_visibility="collapsed",
+                 on_change=lambda: st.session_state.update({freq_key: st.session_state[f"widget_{freq_key}"]}))
+
+    if show_timer:
+        with col_toggle:
+            st.checkbox("⏱", value=st.session_state[timer_key], key=f"widget_{timer_key}",
+                        help="กำหนดระยะเวลาที่เหลือของรายการนี้",
+                        on_change=lambda: st.session_state.update({timer_key: st.session_state[f"widget_{timer_key}"]}))
+
+    # Row 2 (only if timer is on): duration input
+    years_remaining = None
+    if show_timer and st.session_state[timer_key]:
+        _, col_dur_lbl, col_dur_val, col_dur_unit, _ = st.columns([0.3, 1.5, 1, 1.5, 1])
+        with col_dur_lbl:
+            st.markdown("↳ ผ่อนอีก")
+        with col_dur_val:
+            dur_val = st.number_input("", min_value=1, max_value=600,
+                                      value=int(st.session_state[dur_key]),
+                                      key=f"widget_{dur_key}", label_visibility="collapsed",
+                                      on_change=lambda: st.session_state.update({dur_key: st.session_state[f"widget_{dur_key}"]}))
+        with col_dur_unit:
+            cur_unit_idx = options_unit.index(st.session_state[unit_key]) if st.session_state[unit_key] in options_unit else 0
+            st.radio("", options_unit, index=cur_unit_idx, horizontal=False,
+                     key=f"widget_{unit_key}", label_visibility="collapsed",
+                     on_change=lambda: st.session_state.update({unit_key: st.session_state[f"widget_{unit_key}"]}))
+
+        # Convert to years
+        if "เดือน" in st.session_state[unit_key]:
+            years_remaining = st.session_state[dur_key] / 12.0
+        else:
+            years_remaining = float(st.session_state[dur_key])
+
+    # Annual conversion
+    freq = st.session_state[freq_key]
+    annual = float(amount * 12) if "Monthly" in freq else float(amount)
+
+    return annual, years_remaining
+
+
 def build_full_report_csv(export_data, res, alloc, years=30):
     def fnum(x, nd=2, default=0.0):
         try:
@@ -500,21 +595,18 @@ def build_full_report_csv(export_data, res, alloc, years=30):
             return default
 
     ASSET_LABELS = {
-        "pct_deposit": "Fixed Deposit",
-        "pct_gov_bond": "Thai Gov Bond 1Y",
-        "pct_seti": "SET Index",
-        "pct_REITTH": "Thai REIT",
-        "pct_msci_stock": "MSCI World Equity",
-        "pct_msci_gov_bond": "MSCI Gov Bond",
-        "pct_XAUUSD": "Gold (USD)",
-        "pct_MSCIREITs": "Global REIT",
+        "pct_deposit":      "Fixed Deposit",
+        "pct_gov_bond":     "Thai Gov Bond 1Y",
+        "pct_seti":         "SET Index",
+        "pct_REIT":         "Thai REIT",
+        "pct_msci_stock":   "MSCI World Equity",
+        "pct_msci_gov_bond":"MSCI Gov Bond",
+        "pct_gold":         "Gold",
+        "pct_msci_reit":    "Global REIT",
     }
 
     rows = []
 
-    # =========================================================
-    # SECTION A: PROFILE & SETTINGS
-    # =========================================================
     rows.append(["SECTION", "FIELD", "VALUE"])
     rows.append(["PROFILE", "Name", export_data.get("name", "ไม่ระบุชื่อ")])
     rows.append(["PROFILE", "Retire Age", export_data.get("retire_age", "")])
@@ -523,102 +615,84 @@ def build_full_report_csv(export_data, res, alloc, years=30):
     rows.append(["SETTINGS", "Inflation", fpct(export_data.get("inflation"))])
     rows.append([])
 
-    # =========================================================
-    # SECTION B: INCOME DETAIL -> TOTAL
-    # =========================================================
     rows.append(["SECTION", "INCOME ITEM", "YEARLY (THB)", "MONTHLY (THB)"])
     inc_items = export_data.get("inc_detail", {})
     for item, val in inc_items.items():
         if val > 0:
             rows.append(["INCOME_DETAIL", item, fnum(val, 2), fnum(val/12, 2)])
-    
     total_inc = export_data.get("total_income", 0.0)
     rows.append(["INCOME_SUMMARY", "TOTAL INCOME", fnum(total_inc, 2), fnum(total_inc/12, 2)])
     rows.append([])
 
-    # =========================================================
-    # SECTION C: EXPENSE DETAIL -> TOTAL
-    # =========================================================
-    rows.append(["SECTION", "EXPENSE ITEM", "YEARLY (THB)", "MONTHLY (THB)"])
-    
-    # Fixed Expenses
+    rows.append(["SECTION", "EXPENSE ITEM", "YEARLY (THB)", "MONTHLY (THB)", "YEARS REMAINING"])
     fixed_items = export_data.get("exp_fixed_detail", {})
     for item, val in fixed_items.items():
-        if val > 0:
-            rows.append(["EXPENSE_FIXED", item, fnum(val, 2), fnum(val/12, 2)])
-            
-    # Variable Expenses
+        if isinstance(val, dict):
+            yr = val.get("years_remaining", "Permanent")
+            yr_str = f"{yr:.1f} yrs" if yr is not None else "Permanent"
+            rows.append(["EXPENSE_FIXED", item, fnum(val["amount"], 2), fnum(val["amount"]/12, 2), yr_str])
+        elif val > 0:
+            rows.append(["EXPENSE_FIXED", item, fnum(val, 2), fnum(val/12, 2), "Permanent"])
     var_items = export_data.get("exp_var_detail", {})
     for item, val in var_items.items():
         if val > 0:
-            rows.append(["EXPENSE_VARIABLE", item, fnum(val, 2), fnum(val/12, 2)])
-
+            rows.append(["EXPENSE_VARIABLE", item, fnum(val, 2), fnum(val/12, 2), "Permanent"])
     total_exp = export_data.get("total_expense", 0.0)
-    net_save = export_data.get("yearly_savings", 0.0)
-    rows.append(["EXPENSE_SUMMARY", "TOTAL EXPENSE", fnum(total_exp, 2), fnum(total_exp/12, 2)])
-    rows.append(["CASHFLOW", "NET SAVINGS (Surplus/Deficit)", fnum(net_save, 2), fnum(net_save/12, 2)])
+    net_save  = export_data.get("yearly_savings", 0.0)
+    rows.append(["EXPENSE_SUMMARY", "TOTAL EXPENSE", fnum(total_exp, 2), fnum(total_exp/12, 2), ""])
+    rows.append(["CASHFLOW", "NET SAVINGS (Surplus/Deficit)", fnum(net_save, 2), fnum(net_save/12, 2), ""])
     rows.append([])
 
-    # =========================================================
-    # SECTION D: ASSETS & DEBT -> NET WORTH
-    # =========================================================
     rows.append(["SECTION", "ASSET/DEBT ITEM", "VALUE (THB)"])
     asset_items = export_data.get("asset_detail", {})
     for item, val in asset_items.items():
         if val > 0:
             rows.append(["ASSET_DETAIL", item, fnum(val, 2)])
-    
     investable = export_data.get("investable", 0.0)
     rows.append(["ASSET_SUMMARY", "TOTAL INVESTABLE ASSETS", fnum(investable, 2)])
-    
+
     debt_items = export_data.get("debt_detail", {})
-    for item, val in debt_items.items():
-        if val > 0:
-            rows.append(["DEBT_DETAIL", item, fnum(val, 2)])
-            
+    for item, info in debt_items.items():
+        if isinstance(info, dict) and info.get("amount", 0) > 0:
+            yr = info.get("years_remaining", None)
+            yr_str = f"{yr:.1f} yrs" if yr is not None else "Permanent"
+            rows.append(["DEBT_DETAIL", item, fnum(info["amount"], 2), "", yr_str])
+        elif isinstance(info, (int, float)) and info > 0:
+            rows.append(["DEBT_DETAIL", item, fnum(info, 2)])
     total_debt = export_data.get("total_debt", 0.0)
     rows.append(["DEBT_SUMMARY", "TOTAL DEBT", fnum(total_debt, 2)])
-    
     rows.append(["SUMMARY", "NET WORTH", fnum(export_data.get("net_worth"), 2)])
     rows.append([])
 
-    # =========================================================
-    # SECTION E: SIMULATION & ALLOCATION
-    # =========================================================
     sim_strat = export_data.get("sim_strat", "-")
-    wd_rate = export_data.get("wd_rate", None)
+    wd_rate   = export_data.get("wd_rate", None)
     rows.append(["SIMULATION", "Strategy", sim_strat])
     if wd_rate is not None:
         rows.append(["SIMULATION", "Withdrawal Rate", fpct(wd_rate)])
-
     if res is not None:
         rows.append(["SIMULATION", "Survival Rate", f"{res['survival_rate']*100:.1f}%"])
         rows.append(["SIMULATION", "Median End Balance (Year 30)", fnum(res["median_balance"][-1], 0)])
-
     rows.append([])
     rows.append(["SECTION", "ASSET ALLOCATION", "WEIGHT (%)"])
     if alloc:
         for k, v in alloc.items():
             label = ASSET_LABELS.get(k, k)
             rows.append(["ALLOCATION", label, f"{float(v)*100:.2f}%"])
-    
-    # =========================================================
-    # SECTION F: YEARLY PROJECTION
-    # =========================================================
+
     rows.append([])
     rows.append(["YEARLY PROJECTION (30Y)"])
-    rows.append(["Year", "Age", "Median_Balance", "P10_Balance", "P90_Balance", "Median_Withdrawal", "P10_Withdrawal", "P90_Withdrawal", "P10_Depleted_Flag"])
+    rows.append(["Year","Age","Median_Balance","P10_Balance","P90_Balance",
+                 "Median_Withdrawal","P10_Withdrawal","P90_Withdrawal","P10_Depleted_Flag"])
 
     retire_age_int = to_int(export_data.get("retire_age"), 60)
     if res is not None:
         mb, p10b, p90b = res.get("median_balance"), res.get("percentile_10"), res.get("percentile_90")
         mw, p10w, p90w = res.get("median_withdrawal"), res.get("withdrawal_p10"), res.get("withdrawal_p90")
-
         for y in range(1, years + 1):
             age = retire_age_int + (y - 1)
             rows.append([
-                y, age, round(mb[y], 2), round(p10b[y], 2), round(p90b[y], 2),
-                round(mw[y-1], 2), round(p10w[y-1], 2), round(p90w[y-1], 2),
+                y, age, round(mb[y],2), round(p10b[y],2), round(p90b[y],2),
+                round(mw[y-1],2), round(p10w[y-1],2), round(p90w[y-1],2),
                 1 if p10b[y] <= 0 else 0
             ])
 
@@ -626,350 +700,231 @@ def build_full_report_csv(export_data, res, alloc, years=30):
     csv.writer(out).writerows(rows)
     return out.getvalue().encode("utf-8-sig")
 
+
 def build_pdf_bytes(data, res):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-
-    # --- กำหนดค่ามาตรฐานสำหรับตัวอักษร ---
-    FONT_REG = "Helvetica"
+    FONT_REG  = "Helvetica"
     FONT_BOLD = "Helvetica-Bold"
-    SIZE_TITLE = 16
-    SIZE_SUB = 12
-    SIZE_LABEL = 10
-    SIZE_BODY = 10
+    SIZE_TITLE = 16; SIZE_SUB = 12; SIZE_LABEL = 10; SIZE_BODY = 10
 
-    # --- Page 1: Cover Page ---
-    # ใช้หัวข้อที่คุณกำหนด: รายงานการเงิน การวางแผนหลังเกษียณ
-    c.setFont(FONT_BOLD, 25) # ขยายขนาดพิเศษสำหรับหน้าปก
+    c.setFont(FONT_BOLD, 25)
     c.drawCentredString(width/2, height/2 + 50, "Retirement Financial Planning Report")
-    
     c.setFont(FONT_REG, SIZE_SUB)
-    customer_name = data.get('name')
-    c.drawString(1 * inch, 1.5 * inch, f"Customer: {customer_name}")
+    c.drawString(1*inch, 1.5*inch, f"Customer: {data.get('name')}")
     c.showPage()
 
-    # --- Page 2: Disclaimer (คำเตือน) ---
     c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawCentredString(width/2, height - 1 * inch, "Disclaimer / Warning")
-    
+    c.drawCentredString(width/2, height - 1*inch, "Disclaimer / Warning")
     c.setFont(FONT_REG, SIZE_BODY)
-    # ข้อความคำเตือนตามที่คุณกำหนด
     warning_lines = [
-        "This website was created by Financial Engineering Students not Financial Planner nor Investment Advisor ",
-        "and we do not have access to any non public information.We cannot guarantee that the simulation will be 100% correct.",
-        "This was created solely for financial planner to use as an assistance for rough estimation and ",
-        "not to be use as a replacement of one. We are not regulated by any Financial Service Authority."
+        "This website was created by Financial Engineering Students not Financial Planner nor Investment Advisor",
+        "and we do not have access to any non public information. We cannot guarantee the simulation is 100% correct.",
+        "This was created solely for financial planner use as an assistance for rough estimation and",
+        "not to be used as a replacement. We are not regulated by any Financial Service Authority."
     ]
-    
-    y = height - 1.5 * inch
+    y = height - 1.5*inch
     for line in warning_lines:
-        c.drawCentredString(width/2, y, line)
-        y -= 20
+        c.drawCentredString(width/2, y, line); y -= 20
     c.showPage()
 
-    # --- Page 3: Table of Contents ---
     c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(1 * inch, height - 1 * inch, "Table of Contents")
-    
+    c.drawString(1*inch, height - 1*inch, "Table of Contents")
     c.setFont(FONT_REG, SIZE_LABEL)
-    c.drawString(1.2 * inch, height - 1.6 * inch, "1. Financial Health ..................................................................... Page 1")
-    c.drawString(1.2 * inch, height - 1.9 * inch, "2. Asset Allocation & Simulation Result ..................................... Page 2")
+    c.drawString(1.2*inch, height - 1.6*inch, "1. Financial Health ..................................................................... Page 1")
+    c.drawString(1.2*inch, height - 1.9*inch, "2. Asset Allocation & Simulation Result ..................................... Page 2")
     c.showPage()
 
-    # ==========================================
-    # PAGE 1: FINANCIAL HEALTH (เพิ่มระยะห่างบรรทัดให้โปร่งขึ้น)
-    # ==========================================
     c.setFont(FONT_BOLD, SIZE_TITLE)
     c.drawString(50, height - 50, "Financial Planning: Financial Health")
-    
-    # --- SECTION A: Personal Information ---
+
     y = height - 90
-    c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y, "A. Personal Information")
-    c.setFont(FONT_REG, SIZE_BODY)
-    y -= 25 
-    c.drawString(60, y, f"Name: {data.get('name', 'N/A')}")
+    c.setFont(FONT_BOLD, SIZE_SUB); c.drawString(50, y, "A. Personal Information")
+    c.setFont(FONT_REG, SIZE_BODY); y -= 25
+    c.drawString(60, y, f"Name: {data.get('name','N/A')}")
     c.drawString(250, y, f"Retire Age: {data.get('retire_age')} Years")
     c.drawString(400, y, f"Life Expectancy: {data.get('life_exp')} Years")
-    y -= 22 
-    c.drawString(60, y, f"Inheritance Goal: {data.get('inheritance_goal', 0):,.2f} THB")
+    y -= 22
+    c.drawString(60, y, f"Inheritance Goal: {data.get('inheritance_goal',0):,.2f} THB")
 
-    # --- SECTION B: Debt Summary  ---
-    y -= 45 
-    c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y, "B. Debt Summary")
-    
-    # วาดรายการหนี้ย่อย
+    y -= 45
+    c.setFont(FONT_BOLD, SIZE_SUB); c.drawString(50, y, "B. Debt Summary")
     c.setFont(FONT_REG, SIZE_BODY)
     y_current = y - 25
     debt_data = data.get("debt_detail", {})
-    
     has_debt = False
-    for k, v in debt_data.items():
-        if v > 0:
-            c.drawString(60, y_current, f"- {k}: {v:,.2f} THB")
-            y_current -= 22 # ระยะห่างระหว่างรายการหนี้แต่ละบรรทัด
-            has_debt = True
-    
+    for k, info in debt_data.items():
+        if isinstance(info, dict):
+            amt = info.get("amount", 0)
+            yr  = info.get("years_remaining", None)
+        else:
+            amt = info; yr = None
+        if amt > 0:
+            yr_str = f" (ผ่อนอีก {yr:.1f} ปี)" if yr is not None else ""
+            c.drawString(60, y_current, f"- {k}: {amt:,.2f} THB{yr_str}")
+            y_current -= 22; has_debt = True
     if not has_debt:
-        c.drawString(60, y_current, "- No outstanding debt")
-        y_current -= 22
-
-    # บรรทัด Total Liabilities (เว้นระยะห่างจากรายการสุดท้าย 15 หน่วย)
-    y_debt_total = y_current - 15 
+        c.drawString(60, y_current, "- No outstanding debt"); y_current -= 22
+    y_debt_total = y_current - 15
     c.setFont(FONT_BOLD, SIZE_BODY)
-    c.drawString(60, y_debt_total, f"Total Liabilities: {data.get('total_debt', 0):,.2f} THB")
+    c.drawString(60, y_debt_total, f"Total Liabilities: {data.get('total_debt',0):,.2f} THB")
 
-    # --- SECTION C: Post-Retirement Cash Flow ---
-    y = y_debt_total - 45 
-    c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y, "C. Post-Retirement Cash Flow (Annual)")
-    
-    # --- กำหนดตำแหน่งแกน X สำหรับ 2 คอลัมน์ ---
-    x_left = 60
-    x_right = 320  # ขยับไปทางขวาประมาณครึ่งหน้ากระดาษ A4
-    current_y = y - 25
-    start_y = current_y # เก็บค่า y เริ่มต้นไว้เพื่อให้ทั้งสองคอลัมน์เริ่มสูงเท่ากัน
+    y = y_debt_total - 45
+    c.setFont(FONT_BOLD, SIZE_SUB); c.drawString(50, y, "C. Post-Retirement Cash Flow (Annual)")
+    x_left = 60; x_right = 320
+    current_y = y - 25; start_y = current_y
 
-    # --- COLUMN 1: Income Sources (ฝั่งซ้าย) ---
-    c.setFont(FONT_BOLD, SIZE_LABEL)
-    c.drawString(x_left, current_y, "Income Sources")
+    c.setFont(FONT_BOLD, SIZE_LABEL); c.drawString(x_left, current_y, "Income Sources")
     c.setFont(FONT_REG, SIZE_BODY)
-
     y_inc = current_y
     for k, v in data.get("inc_detail", {}).items():
         if v > 0:
-            y_inc -= 20 
-            c.drawString(x_left + 15, y_inc, f"- {k}: {v:,.0f} THB")
+            y_inc -= 20; c.drawString(x_left + 15, y_inc, f"- {k}: {v:,.0f} THB")
 
-    # --- COLUMN 2: Expenses Breakdown (ฝั่งขวา) ---
-    # ใช้ start_y เพื่อให้หัวข้อ [Expenses Breakdown] อยู่ระดับเดียวกับ [Income Sources]
-    c.setFont(FONT_BOLD, SIZE_LABEL)
-    c.drawString(x_right, start_y, "Expenses Breakdown")
+    c.setFont(FONT_BOLD, SIZE_LABEL); c.drawString(x_right, start_y, "Expenses Breakdown")
     c.setFont(FONT_REG, SIZE_BODY)
-
     y_exp = start_y
     all_exp = {**data.get("exp_fixed_detail", {}), **data.get("exp_var_detail", {})}
     for k, v in all_exp.items():
-        if v > 0:
-            y_exp -= 20 
-            c.drawString(x_right + 15, y_exp, f"- {k}: {v:,.0f} THB")
+        if isinstance(v, dict):
+            amt = v.get("amount", 0)
+        else:
+            amt = v
+        if amt > 0:
+            y_exp -= 20; c.drawString(x_right + 15, y_exp, f"- {k}: {amt:,.0f} THB")
 
     total_inc = sum(data.get("inc_detail", {}).values())
-    total_exp = sum(data.get("exp_fixed_detail", {}).values()) + sum(data.get("exp_var_detail", {2}).values())
+    total_exp = 0
+    for v in data.get("exp_fixed_detail", {}).values():
+        total_exp += v["amount"] if isinstance(v, dict) else v
+    for v in data.get("exp_var_detail", {}).values():
+        total_exp += v["amount"] if isinstance(v, dict) else v
     net_flow = total_inc - total_exp
 
-    # --- 1. สรุปยอดรวม Income / Expense (ต่อท้ายคอลัมน์) ---
-    y = min(y_inc, y_exp) - 40 
-    
-    c.setStrokeColorRGB(0.8, 0.8, 0.8)
-    c.line(60, y + 15, 535, y + 15) # เส้นคั่นเบาๆ
+    y = min(y_inc, y_exp) - 40
+    c.setStrokeColorRGB(0.8,0.8,0.8); c.line(60, y+15, 535, y+15)
+    c.setFont(FONT_BOLD, SIZE_BODY); c.setFillColorRGB(0,0,0)
+    c.drawString(60, y, "Total Income:"); c.drawRightString(280, y, f"{total_inc:,.0f} THB")
+    c.drawString(320, y, "Total Expenses:"); c.drawRightString(535, y, f"{total_exp:,.0f} THB")
 
-    c.setFont(FONT_BOLD, SIZE_BODY)
-    c.setFillColorRGB(0, 0, 0)
-    c.drawString(60, y, "Total Income:")
-    c.drawRightString(280, y, f"{total_inc:,.0f} THB")
-
-    c.drawString(320, y, "Total Expenses:")
-    c.drawRightString(535, y, f"{total_exp:,.0f} THB")
-
-    # --- 2. Financial Health Summary (ส่วนล่างสุดของหน้า) ---
     y -= 60
-    c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y, "Financial Health Summary")
-
-    # --- 3. รายละเอียดประกอบ (Net Worth / Monthly) ---
+    c.setFont(FONT_BOLD, SIZE_SUB); c.drawString(50, y, "Financial Health Summary")
     y -= 30
-    c.setFillColorRGB(0, 0, 0)
-    c.setFont(FONT_REG, SIZE_BODY)
-    c.drawString(60, y, f"Net Worth: {data.get('net_worth', 0):,.2f} THB")
-
-    # แสดงรายละเอียดรายปี/เดือน ฝั่งขวา
-    if net_flow < 0:
-        c.setFillColorRGB(0.8, 0, 0)
-    
-    c.drawRightString(535, y, f"Net Cashflow/Year: {net_flow:,.2f} THB")
-    y -= 22
+    c.setFillColorRGB(0,0,0); c.setFont(FONT_REG, SIZE_BODY)
+    c.drawString(60, y, f"Net Worth: {data.get('net_worth',0):,.2f} THB")
+    if net_flow < 0: c.setFillColorRGB(0.8,0,0)
+    c.drawRightString(535, y, f"Net Cashflow/Year: {net_flow:,.2f} THB"); y -= 22
     c.drawRightString(535, y, f"Net Cashflow/Month: {(net_flow/12):,.2f} THB")
-    
-    # รีเซ็ตสีก่อนจบหน้า
-    c.setFillColorRGB(0, 0, 0)
+    c.setFillColorRGB(0,0,0)
     c.showPage()
 
-    # ==========================================
-    # PAGE 4: ASSET PIE CHART & MONTE CARLO
-    # ==========================================
     y_top = height - 50
-    c.setFont(FONT_BOLD, SIZE_TITLE)
-    c.drawString(50, y_top, "Asset Allocation & Simulation Result")
-
-    # --- 4. Asset Allocation ---
+    c.setFont(FONT_BOLD, SIZE_TITLE); c.drawString(50, y_top, "Asset Allocation & Simulation Result")
     y_pie_section = y_top - 45
-    c.setFont(FONT_BOLD, SIZE_SUB)
-    c.drawString(50, y_pie_section, "4. Asset Allocation Details")
-    
+    c.setFont(FONT_BOLD, SIZE_SUB); c.drawString(50, y_pie_section, "4. Asset Allocation Details")
+
     asset_data = data.get("asset_detail", {})
-    labels = [k for k, v in asset_data.items() if v > 0]
-    values = [v for k, v in asset_data.items() if v > 0]
-    
+    labels = [k for k,v in asset_data.items() if v > 0]
+    values = [v for k,v in asset_data.items() if v > 0]
     if values:
-        fig_pie, ax_pie = plt.subplots(figsize=(4, 4))
+        fig_pie, ax_pie = plt.subplots(figsize=(4,4))
         ax_pie.pie(values, labels=labels, autopct='%1.1f%%', startangle=140)
         img_buf_pie = io.BytesIO()
-        plt.savefig(img_buf_pie, format='png', transparent=True)
-        plt.close(fig_pie)
-        c.drawImage(ImageReader(img_buf_pie), 30, y_pie_section - 210, width=220, height=220)
+        plt.savefig(img_buf_pie, format='png', transparent=True); plt.close(fig_pie)
+        c.drawImage(ImageReader(img_buf_pie), 30, y_pie_section-210, width=220, height=220)
 
-    # Asset List side by side
     y_alist = y_pie_section - 50
-    c.setFont(FONT_BOLD, SIZE_LABEL)
-    c.drawString(280, y_alist, "[Current Asset Value]")
+    c.setFont(FONT_BOLD, SIZE_LABEL); c.drawString(280, y_alist, "[Current Asset Value]")
     c.setFont(FONT_REG, SIZE_BODY)
-    for k, v in asset_data.items():
-        if v > 0:
-            y_alist -= 18
-            c.drawString(290, y_alist, f"- {k}: {v:,.2f} THB")
+    for k,v in asset_data.items():
+        if v > 0: y_alist -= 18; c.drawString(290, y_alist, f"- {k}: {v:,.2f} THB")
 
-    # --- 5. Wealth Projection & Simulation Stats ---
     y_graph = y_pie_section - 250
     if res is not None:
-        c.setFont(FONT_BOLD, SIZE_SUB)
-        c.drawString(50, y_graph, "Wealth Projection (Monte Carlo Simulation)")
-        
-        # วาดกราฟ (ขนาดปรับให้พอดี)
-        fig_mc, ax_mc = plt.subplots(figsize=(10, 4))
+        c.setFont(FONT_BOLD, SIZE_SUB); c.drawString(50, y_graph, "Wealth Projection (Monte Carlo Simulation)")
+        fig_mc, ax_mc = plt.subplots(figsize=(10,4))
         x_range = range(len(res["median_balance"]))
         ax_mc.fill_between(x_range, res["percentile_10"], res["percentile_90"], alpha=0.2, label="10-90th Pctl")
         ax_mc.plot(x_range, res["median_balance"], label="Median Balance", linewidth=2, color='blue')
         ax_mc.axhline(0, color='red', linestyle="--")
-        
         inh_goal = data.get("inheritance_goal", 0.0)
         if inh_goal > 0:
             ax_mc.axhline(inh_goal, color='purple', linestyle="-.", label=f"Goal ({inh_goal:,.0f})")
-
         ax_mc.legend(loc='upper left', fontsize='small')
-        ax_mc.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
-        
+        ax_mc.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x,p: format(int(x),',')))
         img_buf_mc = io.BytesIO()
-        plt.savefig(img_buf_mc, format='png', dpi=120)
-        plt.close(fig_mc)
-        c.drawImage(ImageReader(img_buf_mc), 50, y_graph - 230, width=500, height=220)
+        plt.savefig(img_buf_mc, format='png', dpi=120); plt.close(fig_mc)
+        c.drawImage(ImageReader(img_buf_mc), 50, y_graph-230, width=500, height=220)
 
-        # --- ส่วนที่เพิ่ม: Simulation Results Summary ---
         y_sim_stats = y_graph - 260
-        c.setStrokeColorRGB(0.7, 0.7, 0.7)
-        c.line(50, y_sim_stats + 15, width - 50, y_sim_stats + 20) # ขีดเส้นคั่น
-        
+        c.setStrokeColorRGB(0.7,0.7,0.7); c.line(50, y_sim_stats+15, width-50, y_sim_stats+20)
         y_sim_stats -= 20
-        c.setFont(FONT_BOLD, SIZE_SUB)
-        c.drawString(50, y_sim_stats, "Simulation Outcome Summary")
-        
-        # สรุปตัวเลขสำคัญ (Survival Rate, Median End Balance)
-        c.setFont(FONT_REG, SIZE_BODY)
-        y_sim_stats -= 25
-        
-        success_rate = res.get("survival_rate", 0) * 100
-        median_end = res["median_balance"][-1] if "median_balance" in res else 0
-        inh_success = res.get("inheritance_success_rate", 0.0) * 100
-        
-        # บรรทัดที่ 1: อัตราการอยู่รอด และ เงินคงเหลือมัธยฐาน
+        c.setFont(FONT_BOLD, SIZE_SUB); c.drawString(50, y_sim_stats, "Simulation Outcome Summary")
+        c.setFont(FONT_REG, SIZE_BODY); y_sim_stats -= 25
+        success_rate = res.get("survival_rate",0)*100
+        median_end   = res["median_balance"][-1] if "median_balance" in res else 0
+        inh_success  = res.get("inheritance_success_rate",0.0)*100
         c.drawString(60, y_sim_stats, f"Survival Success Rate: {success_rate:.1f}%")
         c.drawString(300, y_sim_stats, f"Median End Balance: {median_end:,.2f} THB")
-        
-        # บรรทัดที่ 2: อัตราความสำเร็จของมรดก และ กลยุทธ์ที่ใช้
         y_sim_stats -= 20
         c.drawString(60, y_sim_stats, f"Inheritance Success Rate: {inh_success:.1f}%")
         c.drawString(300, y_sim_stats, f"Withdrawal Strategy: {data.get('sim_strat')}")
-
-        # บรรทัดที่ 3: อัตราการถอน และ เงินเฟ้อ
         y_sim_stats -= 20
-        c.drawString(60, y_sim_stats, f"Withdrawal Rate (WD): {data.get('wd_rate', 0)*100:.2f}%")
-        c.drawString(300, y_sim_stats, f"Expected Inflation: {data.get('inflation', 0.03)*100:.2f}%")
+        c.drawString(60, y_sim_stats, f"Withdrawal Rate (WD): {data.get('wd_rate',0)*100:.2f}%")
+        c.drawString(300, y_sim_stats, f"Expected Inflation: {data.get('inflation',0.03)*100:.2f}%")
 
         c.save()
         return buffer.getvalue()
 
+
 def parse_bloomberg_file(uploaded_file):
     try:
-            filename = uploaded_file.name.lower()
-            header_idx = None
-            df_raw = None
-            
-            # A. Read raw rows to find the Header
-            if filename.endswith(('.xlsx', '.xls')):
-                df_raw = pd.read_excel(uploaded_file, header=None, nrows=20)
-            else:
-                df_raw = pd.read_csv(uploaded_file, header=None, nrows=20)
+        filename  = uploaded_file.name.lower()
+        header_idx = None; df_raw = None
 
-            # --- HEADER SEARCH ---
-            # Look for row containing "Date" and a price keyword
-            for r, row in df_raw.iterrows():
-                row_text = row.astype(str).str.upper().str.cat(sep=' ')
-                if "DATE" in row_text and any(k in row_text for k in ['PX', 'LAST', 'PRICE', 'TOT', 'RETURN', 'GROSS']):
-                    header_idx = r
-                    break
-            
-            if header_idx is None: return None, "No 'Date' column found."
+        if filename.endswith(('.xlsx','.xls')):
+            df_raw = pd.read_excel(uploaded_file, header=None, nrows=20)
+        else:
+            df_raw = pd.read_csv(uploaded_file, header=None, nrows=20)
 
-            # B. Reload full file with correct header
-            uploaded_file.seek(0)
-            if filename.endswith(('.xlsx', '.xls')):
-                df = pd.read_excel(uploaded_file, header=header_idx)
-            else:
-                df = pd.read_csv(uploaded_file, header=header_idx)
+        for r, row in df_raw.iterrows():
+            row_text = row.astype(str).str.upper().str.cat(sep=' ')
+            if "DATE" in row_text and any(k in row_text for k in ['PX','LAST','PRICE','TOT','RETURN','GROSS']):
+                header_idx = r; break
 
-            # --- DEBUG: Show found columns ---
-            # (This helps us see if the column name is weird)
-            print(f"[{filename}] Found Columns: {list(df.columns)}")
+        if header_idx is None: return None, "No 'Date' column found."
 
-            # C. Identify Columns
-            
-            # 1. Find Date Column
-            date_col = next((c for c in df.columns if "date" in str(c).lower()), None)
-            
-            # 2. Find Price Column (UPDATED PRIORITY)
-            price_col = None
-            
-            # Priority 1: TOTAL RETURN / GROSS RETURN (The Gold Standard)
-            # We check for "TOT" or "GROSS" combined with "RETURN" or "INDEX"
+        uploaded_file.seek(0)
+        if filename.endswith(('.xlsx','.xls')):
+            df = pd.read_excel(uploaded_file, header=header_idx)
+        else:
+            df = pd.read_csv(uploaded_file, header=header_idx)
+
+        date_col  = next((c for c in df.columns if "date" in str(c).lower()), None)
+        price_col = None
+        for c in df.columns:
+            c_up = str(c).upper()
+            if ("TOT" in c_up or "GROSS" in c_up) and ("RETURN" in c_up or "INDEX" in c_up):
+                price_col = c; break
+        if not price_col:
+            for c in df.columns:
+                if "TOT_RETURN" in str(c).upper(): price_col = c; break
+        if not price_col:
             for c in df.columns:
                 c_up = str(c).upper()
-                # Catch: TOT_RETURN, TOT_RETURN_INDEX_GROSS_DVDS, GROSS_RETURN
-                if ("TOT" in c_up or "GROSS" in c_up) and ("RETURN" in c_up or "INDEX" in c_up):
-                    price_col = c
-                    break
-            
-            # Priority 2: Fallback to simple "TOT_RETURN" if complex match failed
-            if not price_col:
-                for c in df.columns:
-                    if "TOT_RETURN" in str(c).upper():
-                        price_col = c
-                        break
+                if "PX" in c_up or "LAST" in c_up or "CLOSE" in c_up or "PRICE" in c_up:
+                    price_col = c; break
 
-            # Priority 3: Standard Price (Last Resort)
-            if not price_col:
-                for c in df.columns:
-                    c_up = str(c).upper()
-                    if "PX" in c_up or "LAST" in c_up or "CLOSE" in c_up or "PRICE" in c_up:
-                        price_col = c
-                        break
+        if not date_col or not price_col:
+            return None, f"Columns missing. Found: {list(df.columns)}"
 
-            if not date_col or not price_col: 
-                return None, f"Columns missing. Found: {list(df.columns)}"
-
-            # D. Clean & Sort
-            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-            df.set_index(date_col, inplace=True)
-            
-            series = pd.to_numeric(df[price_col], errors='coerce').dropna().sort_index()
-            
-            # Set name to show user EXACTLY what we picked
-            series.name = f"{filename} ({price_col})"
-            
-            return series, None
-
-    except Exception as e: 
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        df.set_index(date_col, inplace=True)
+        series = pd.to_numeric(df[price_col], errors='coerce').dropna().sort_index()
+        series.name = f"{filename} ({price_col})"
+        return series, None
+    except Exception as e:
         return None, str(e)
 
 # =========================================================
@@ -981,208 +936,223 @@ if "nav_radio" not in st.session_state:
 st.radio("Go to:", steps, key="nav_radio", horizontal=True, label_visibility="collapsed", on_change=jump_step)
 st.progress((st.session_state["current_step"] + 1) / len(steps))
 st.divider()
-# ========================================================
-# PAGE 1: FINANCIAL HEALTH 
+
+# =========================================================
+# PAGE 1: FINANCIAL HEALTH
 # =========================================================
 if st.session_state["current_step"] == 0:
     st.header("👤 1. ข้อมูลผู้ใช้ (Financial Health)")
     st.subheader("A. ข้อมูลส่วนตัว")
-    if "user_name" not in st.session_state:
-        st.session_state["user_name"] = ""
-    if "retire_age" not in st.session_state:
-        st.session_state["retire_age"] = 60
-    if "life_expectancy" not in st.session_state:
-        st.session_state["life_expectancy"] = 85
-        
-    if "ui_user_name" not in st.session_state:
-        st.session_state["ui_user_name"] = st.session_state["user_name"]
-    if "ui_retire_age" not in st.session_state:
-        st.session_state["ui_retire_age"] = int(st.session_state["retire_age"])
-    if "ui_life_expectancy" not in st.session_state:
-        st.session_state["ui_life_expectancy"] = int(st.session_state["life_expectancy"])
+
+    for k, v in [("user_name",""), ("retire_age",60), ("life_expectancy",85)]:
+        if k not in st.session_state: st.session_state[k] = v
+    for k, v in [("ui_user_name",""), ("ui_retire_age",60), ("ui_life_expectancy",85)]:
+        if k not in st.session_state:
+            st.session_state[k] = st.session_state[k.replace("ui_","")]
 
     def validate_ages():
-        st.session_state["retire_age"] = int(st.session_state.get("ui_retire_age", 60))
-    st.session_state["life_expectancy"] = int(st.session_state.get("ui_life_expectancy", 85))
+        st.session_state["retire_age"]      = int(st.session_state.get("ui_retire_age", 60))
+        st.session_state["life_expectancy"] = int(st.session_state.get("ui_life_expectancy", 85))
+        if st.session_state["life_expectancy"] < st.session_state["retire_age"]:
+            st.session_state["life_expectancy"]    = st.session_state["retire_age"]
+            st.session_state["ui_life_expectancy"] = st.session_state["life_expectancy"]
 
-    # enforce rule
     if st.session_state["life_expectancy"] < st.session_state["retire_age"]:
-        st.session_state["life_expectancy"] = st.session_state["retire_age"]
+        st.session_state["life_expectancy"]    = st.session_state["retire_age"]
         st.session_state["ui_life_expectancy"] = st.session_state["life_expectancy"]
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text_input(
-            "ชื่อ", 
-            value=st.session_state["user_name"], 
-            key="ui_user_name",
-            on_change=lambda: st.session_state.update({"user_name": st.session_state["ui_user_name"]})
-        )
+        st.text_input("ชื่อ", value=st.session_state["user_name"], key="ui_user_name",
+                      on_change=lambda: st.session_state.update({"user_name": st.session_state["ui_user_name"]}))
     with c2:
-        st.number_input(
-        "อายุเกษียณ",
-        min_value=40,
-        max_value=100,
-        value=int(st.session_state["ui_retire_age"]),   # ✅ IMPORTANT
-        key="ui_retire_age",
-        on_change=validate_ages,
-    )
-
+        st.number_input("อายุเกษียณ", min_value=40, max_value=100,
+                        value=int(st.session_state["ui_retire_age"]), key="ui_retire_age", on_change=validate_ages)
     with c3:
-        st.number_input(
-            "อายุขัย",
-            min_value=int(st.session_state["ui_retire_age"]),  # ✅ bind to UI value
-            max_value=120,
-            value=int(st.session_state["ui_life_expectancy"]), # ✅ IMPORTANT
-            key="ui_life_expectancy",
-            on_change=validate_ages,
-        )
-    # Assets
+        st.number_input("อายุขัย", min_value=int(st.session_state["ui_retire_age"]), max_value=120,
+                        value=int(st.session_state["ui_life_expectancy"]), key="ui_life_expectancy", on_change=validate_ages)
+
+    # ---- ASSETS ----
     st.subheader("B. ทรัพย์สิน (Investable Assets Only)")
     with st.expander("📝 รายละเอียดทรัพย์สิน", expanded=True):
         st.markdown("💰 สินทรัพย์เพื่อการลงทุน")
         i1, i2 = st.columns(2)
         with i1:
-            money_cash = money_input("เงินสด/เงินฝาก (Cash)", 0, "cash_dep")
-            money_bond = money_input("ตราสารหนี้ (Thai Bond)", 0, "bond")
-            money_stock = money_input("หุ้นไทย (Thai stock)", 0, "stock")
-            money_reit = money_input ("PF&REIT",0,"reit")
-           
+            money_cash    = money_input("เงินสด/เงินฝาก (Cash)", 0, "cash_dep")
+            money_bond    = money_input("ตราสารหนี้ (Thai Bond)", 0, "bond")
+            money_stock   = money_input("หุ้นไทย (Thai stock)", 0, "stock")
+            money_reit    = money_input("PF&REIT", 0, "reit")
         with i2:
-            money_glbond = money_input("ตราสารหนี้โลก (Global Bond)",0, "gl_bond")
+            money_glbond  = money_input("ตราสารหนี้โลก (Global Bond)", 0, "gl_bond")
             money_glstock = money_input("หุ้นต่างประเทศ (Global stock)", 0, "gl_stock")
-            money_glreit = money_input("Global REIT",0,"gl_reit")
-            money_gold = money_input("ทองคำ (Gold)", 0, "gold_invest")
+            money_glreit  = money_input("Global REIT", 0, "gl_reit")
+            money_gold    = money_input("ทองคำ (Gold)", 0, "gold_invest")
 
-    investable_assets = money_cash + money_bond + money_stock + money_glstock + money_reit + money_glbond + money_glreit+money_gold
-    st.metric("💰 รวมเงินลงทุนทั้งหมด",f"{investable_assets:,.0f}")
+    investable_assets = money_cash + money_bond + money_stock + money_glstock + money_reit + money_glbond + money_glreit + money_gold
+    st.metric("💰 รวมเงินลงทุนทั้งหมด", f"{investable_assets:,.0f}")
     st.session_state["start_port"] = investable_assets
 
-    # Debt
+    # =========================================================
+    # ---- DEBT SECTION (with timed payments) ----
+    # =========================================================
     st.subheader("C. หนี้สิน (Debt)")
+    st.caption("💡 กด ⏱ เพื่อระบุว่าผ่อนอีกกี่เดือน/ปี — ระบบจะหยุดนับรายจ่ายนี้เมื่อครบกำหนด")
+
     with st.expander("📝 รายละเอียดหนี้สินรวม", expanded=True):
         st.markdown("💳 หนี้สินต่างๆ")
-        lc1, lc2 = st.columns(2)
-        with lc1:
-            debt_home = money_input("หนี้บ้าน", 0, "debt_home")
-            debt_car = money_input("หนี้รถ", 0, "debt_car")
-        with lc2:
-            debt_cc = money_input("บัตรเครดิต", 0, "debt_cc")
-            debt_other = money_input("หนี้สินอื่น", 0, "debt_other")
-        total_debt = debt_home + debt_car + debt_cc + debt_other
-    st.metric("💳 หนี้สินรวมทั้งหมด", f"{total_debt:,.0f}")
 
+        debt_home_amt, debt_home_yrs  = timed_expense_input("หนี้บ้าน (Home Loan)",          "debt_home",  show_timer=True)
+        debt_car_amt,  debt_car_yrs   = timed_expense_input("หนี้รถ (Car Loan)",             "debt_car",   show_timer=True)
+        debt_cc_amt,   debt_cc_yrs    = timed_expense_input("บัตรเครดิต (Credit Card)",      "debt_cc",    show_timer=True)
+        debt_other_amt, debt_other_yrs= timed_expense_input("หนี้สินอื่น (Other Debt)",      "debt_other", show_timer=True)
+
+        total_debt_annual = debt_home_amt + debt_car_amt + debt_cc_amt + debt_other_amt
+
+        # Preview: show a mini-schedule
+        if total_debt_annual > 0:
+            st.markdown("---")
+            st.markdown("##### 📅 ตัวอย่างภาระหนี้รายปี (ไม่รวมเงินเฟ้อ)")
+            preview_years = min(int(st.session_state.get("life_expectancy",85) - st.session_state.get("retire_age",60)), 30)
+            debt_items_list = [
+                {"name":"Home",   "annual": debt_home_amt,  "yrs": debt_home_yrs},
+                {"name":"Car",    "annual": debt_car_amt,   "yrs": debt_car_yrs},
+                {"name":"CC",     "annual": debt_cc_amt,    "yrs": debt_cc_yrs},
+                {"name":"Other",  "annual": debt_other_amt, "yrs": debt_other_yrs},
+            ]
+            preview_data = {}
+            for item in debt_items_list:
+                if item["annual"] > 0:
+                    col_vals = []
+                    for yr in range(preview_years):
+                        if item["yrs"] is None or yr < item["yrs"]:
+                            col_vals.append(item["annual"])
+                        else:
+                            col_vals.append(0.0)
+                    preview_data[item["name"]] = col_vals
+
+            if preview_data:
+                preview_df = pd.DataFrame(preview_data,
+                                          index=[f"ปีที่ {i+1}" for i in range(preview_years)])
+                preview_df["รวม/ปี"] = preview_df.sum(axis=1)
+                # Format
+                fmt_df = preview_df.copy()
+                for col in fmt_df.columns:
+                    fmt_df[col] = fmt_df[col].apply(lambda x: f"{x:,.0f}" if x > 0 else "-")
+                st.dataframe(fmt_df, use_container_width=True)
+
+    # Total outstanding balance (for net worth) — use the balance values, not payments
+    debt_home_bal  = get_num("debt_home")
+    debt_car_bal   = get_num("debt_car")
+    debt_cc_bal    = get_num("debt_cc")
+    debt_other_bal = get_num("debt_other")
+    total_debt_balance = debt_home_bal + debt_car_bal + debt_cc_bal + debt_other_bal
+
+    st.metric("💳 หนี้สินรวมทั้งหมด (ยอดคงค้าง)", f"{total_debt_balance:,.0f}")
+
+    # Save timed debt info for simulation
+    st.session_state["timed_debt_items"] = [
+        {"name":"Home Loan",    "annual_amount": debt_home_amt,  "years_remaining": debt_home_yrs},
+        {"name":"Car Loan",     "annual_amount": debt_car_amt,   "years_remaining": debt_car_yrs},
+        {"name":"Credit Card",  "annual_amount": debt_cc_amt,    "years_remaining": debt_cc_yrs},
+        {"name":"Other Debt",   "annual_amount": debt_other_amt, "years_remaining": debt_other_yrs},
+    ]
+
+    # ---- CASH FLOW ----
     st.subheader("D. กระแสเงินสด (Cash Flow) — หลังเกษียณ")
-    # --- 1. DEFINE THE HELPER FUNCTION ---
+
     def cashflow_input(label, key_suffix):
+        """Simple cashflow without timer (for income & variable expense)."""
         options = ["ต่อเดือน (Monthly)", "ต่อปี (Yearly)"]
         freq_key = f"freq_{key_suffix}"
-        
-        # 1. ตรวจสอบค่าใน Session State ครั้งแรกที่โหลด
         if freq_key not in st.session_state:
             st.session_state[freq_key] = options[0]
 
-        # 2. ฟังก์ชัน Callback เพื่อดึงค่าจาก Widget มาเก็บไว้ใน State จริงๆ
         def on_change():
             st.session_state[freq_key] = st.session_state[f"widget_{freq_key}"]
 
-        c_lbl, c_inp, c_frq = st.columns([2,2,2], vertical_alignment="center")
-        
+        c_lbl, c_inp, c_frq = st.columns([2, 2, 2], vertical_alignment="center")
         with c_lbl:
             st.markdown(f"{label}")
-            
         with c_inp:
-            amount = money_input("", 0, key_suffix) 
-            
+            amount = money_input("", 0, key_suffix)
         with c_frq:
-            # 3. ใช้ Widget Key แยกต่างหาก (widget_...) และดึง index จากค่าใน State
             current_val = st.session_state[freq_key]
             current_idx = options.index(current_val) if current_val in options else 0
-            
-            st.radio(
-                "", 
-                options,
-                index=current_idx,
-                horizontal=True,
-                key=f"widget_{freq_key}", # ใช้ชื่อ Key ที่ต่างจาก State Key
-                on_change=on_change,      # เมื่อเปลี่ยนค่าให้ไปรันฟังก์ชันเก็บค่า
-                label_visibility="collapsed"
-            )
-        
-        # 4. ใช้ค่าจาก State หลักมาคำนวณเสมอ
-        final_freq = st.session_state[freq_key]
-        if "Monthly" in final_freq:
-            return float(amount * 12)
-        else:
-            return float(amount)
+            st.radio("", options, index=current_idx, horizontal=True,
+                     key=f"widget_{freq_key}", on_change=on_change, label_visibility="collapsed")
 
-    # --- 2. INCOME SECTION (Clean & Simple) ---
-    with st.expander(" 📥 1. รายได้ (Income)"):
+        freq = st.session_state[freq_key]
+        return float(amount * 12) if "Monthly" in freq else float(amount)
+
+    with st.expander("📥 1. รายได้ (Income)"):
         inc_pension = cashflow_input("เงินบำนาญ (Pension)", "inc_sal")
-        inc_rent    = cashflow_input("ค่าเช่า (Rental)", "inc_rent")
+        inc_rent    = cashflow_input("ค่าเช่า (Rental)",   "inc_rent")
         inc_div     = cashflow_input("ดอกเบี้ย/ปันผล (Dividend)", "inc_div")
         inc_other   = cashflow_input("รายได้อื่นๆ (Other)", "inc_other")
-
-        # Calculations
-        total_income = inc_pension + inc_rent + inc_div + inc_other
+        total_income    = inc_pension + inc_rent + inc_div + inc_other
         total_income_mo = total_income / 12
     st.success(f"💰 **รวมรายได้:** {total_income:,.0f} บาท/ปี (เฉลี่ย {total_income_mo:,.0f} บาท/เดือน)")
 
-    # --- 3. EXPENSE SECTION (Clean & Simple) ---
     with st.expander("💸 2. รายจ่าย (Expenses)"):
         st.markdown("🔹 รายจ่ายคงที่ (Fixed)")
-        exp_loan  = cashflow_input("ค่าผ่อนรถ/บ้าน (Loan)", "exp_loan")
-        exp_house = cashflow_input("ค่าที่อยู่ (Housing)", "exp_house")
-        exp_ins   = cashflow_input("ประกัน (Insurance)", "exp_ins")
-        exp_sub   = cashflow_input("Subscription", "exp_sub")
-        exp_fix   = cashflow_input("อื่นๆ (Other Fixed)", "exp_fix_oth")
-        
-        total_fixed = exp_loan + exp_house + exp_ins + exp_sub + exp_fix
-        st.info(f"รวม Fixed: {total_fixed:,.0f} บาท/ปี (เฉลี่ย {total_fixed/12:,.0f} บาท/เดือน)")
-        
-        st.markdown("---") 
+        st.caption("💡 กด ⏱ สำหรับรายจ่ายที่มีระยะเวลาสิ้นสุด")
 
-        # Variable Expenses
+        exp_loan_amt,  exp_loan_yrs   = timed_expense_input("ค่าผ่อนรถ/บ้าน (Loan)",    "exp_loan",    show_timer=True)
+        exp_house_amt, exp_house_yrs  = timed_expense_input("ค่าที่อยู่ (Housing)",     "exp_house",   show_timer=True)
+        exp_ins_amt,   exp_ins_yrs    = timed_expense_input("ประกัน (Insurance)",       "exp_ins",     show_timer=True)
+        exp_sub_amt,   exp_sub_yrs    = timed_expense_input("Subscription",             "exp_sub",     show_timer=True)
+        exp_fix_amt,   exp_fix_yrs    = timed_expense_input("อื่นๆ (Other Fixed)",      "exp_fix_oth", show_timer=True)
+
+        total_fixed = exp_loan_amt + exp_house_amt + exp_ins_amt + exp_sub_amt + exp_fix_amt
+        st.info(f"รวม Fixed: {total_fixed:,.0f} บาท/ปี (เฉลี่ย {total_fixed/12:,.0f} บาท/เดือน)")
+
+        st.markdown("---")
         st.markdown("🔸 รายจ่ายผันแปร (Non-Fixed)")
         exp_trans  = cashflow_input("ค่าเดินทาง (Transport)", "exp_trans")
-        exp_food   = cashflow_input("ค่าอาหาร (Food)", "exp_food")
-        exp_ent    = cashflow_input("สันทนาการ (Entertain)", "exp_ent")
-        exp_travel = cashflow_input("ท่องเที่ยว (Travel)", "exp_travel")
-        exp_health = cashflow_input("รักษาพยาบาล (Health)", "exp_health")
-        exp_var    = cashflow_input("อื่นๆ (Other Variable)", "exp_var_oth")
-        
+        exp_food   = cashflow_input("ค่าอาหาร (Food)",        "exp_food")
+        exp_ent    = cashflow_input("สันทนาการ (Entertain)",   "exp_ent")
+        exp_travel = cashflow_input("ท่องเที่ยว (Travel)",     "exp_travel")
+        exp_health = cashflow_input("รักษาพยาบาล (Health)",   "exp_health")
+        exp_var    = cashflow_input("อื่นๆ (Other Variable)",  "exp_var_oth")
         total_variable = exp_trans + exp_food + exp_ent + exp_travel + exp_health + exp_var
         st.info(f"รวม Variable: {total_variable:,.0f} บาท/ปี (เฉลี่ย {total_variable/12:,.0f} บาท/เดือน)")
 
-        # Total Expense
-        total_expense = total_fixed + total_variable
+        total_expense    = total_fixed + total_variable
         total_expense_mo = total_expense / 12
 
     st.error(f"📉 **รวมรายจ่าย:** {total_expense:,.0f} บาท/ปี (เฉลี่ย {total_expense_mo:,.0f} บาท/เดือน)")
 
-    # --- 4. SAVE RESULTS ---
-    st.session_state["v_total_income"] = total_income
+    # Save timed fixed expense items for simulation
+    st.session_state["timed_expense_items"] = [
+        {"name":"Loan",       "annual_amount": exp_loan_amt,  "years_remaining": exp_loan_yrs},
+        {"name":"Housing",    "annual_amount": exp_house_amt, "years_remaining": exp_house_yrs},
+        {"name":"Insurance",  "annual_amount": exp_ins_amt,   "years_remaining": exp_ins_yrs},
+        {"name":"Subscription","annual_amount":exp_sub_amt,   "years_remaining": exp_sub_yrs},
+        {"name":"Other Fixed","annual_amount": exp_fix_amt,   "years_remaining": exp_fix_yrs},
+    ]
+
+    st.session_state["v_total_income"]  = total_income
     st.session_state["v_total_expense"] = total_expense
-    st.session_state["v_net_cashflow"] = total_income - total_expense
-    
+    st.session_state["v_net_cashflow"]  = total_income - total_expense
+
     yearly_savings = total_income - total_expense
-    net_worth = investable_assets - total_debt
+    net_worth = investable_assets - total_debt_balance
 
     st.markdown("### 📊 สรุปสถานะการเงิน (หลังเกษียณ)")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("มูลค่าสุทธิ (Net Worth)", f"{net_worth:,.0f}")
     m2.metric("เงินลงทุนได้ (Investable)", f"{investable_assets:,.0f}")
     m3.metric("เงินคงเหลือ/ปี (Income-Expense)", f"{yearly_savings:,.0f}")
-    m4.metric("หนี้สินรวม", f"{total_debt:,.0f}")
+    m4.metric("หนี้สินรวม", f"{total_debt_balance:,.0f}")
 
     if yearly_savings < 0:
-        st.warning(f"⚠️ รายจ่ายมากกว่ารายได้ {abs(yearly_savings):,.0f} บาท/ปี (ยังสามารถจำลองต่อได้)")
+        st.warning(f"⚠️ รายจ่ายมากกว่ารายได้ {abs(yearly_savings):,.0f} บาท/ปี")
 
-    # store core
-    st.session_state["start_port"] = investable_assets
-    st.session_state["money_save"] = yearly_savings
-    st.session_state["money_debt"] = total_debt 
-    
+    # Persist
+    st.session_state["start_port"]  = investable_assets
+    st.session_state["money_save"]  = yearly_savings
+    st.session_state["money_debt"]  = total_debt_balance
+
     st.session_state["v_cash_dep"]  = money_cash
     st.session_state["v_bond"]      = money_bond
     st.session_state["v_stock"]     = money_stock
@@ -1192,19 +1162,18 @@ if st.session_state["current_step"] == 0:
     st.session_state["v_gl_reit"]   = money_glreit
     st.session_state["v_gold"]      = money_gold
 
-
-    # inflation 
     st.session_state["inflation"] = st.slider(
-        "เงินเฟ้อคาดการณ์ (%)",0.0, 10.0, 
-        st.session_state.get("inflation", 0.03) * 100,0.1) / 100
+        "เงินเฟ้อคาดการณ์ (%)", 0.0, 10.0,
+        st.session_state.get("inflation", 0.03) * 100, 0.1) / 100
 
     st.subheader("Inheritance Goals")
     with st.expander("📝 เป้าหมายมรดกที่ต้องการ", expanded=True):
         st.session_state["inheritance_goal"] = money_input("จำนวนเงินที่ต้องการ (THB)", 0, "inheritance_goal")
-        
-    c_nav1,c_nav2 = st.columns([10, 3])
+
+    c_nav1, c_nav2 = st.columns([10, 3])
     with c_nav2:
         st.button("Next Step ➡", on_click=next_step, type="primary")
+
 # =========================================================
 # PAGE 2: RISK ASSESSMENT
 # =========================================================
@@ -1213,192 +1182,136 @@ elif st.session_state["current_step"] == 1:
 
     questions_data = [
         {"q": "Q1: ปัจจุบันคุณกำลังอยู่ในช่วงชีวิตใด", "choices": [{"label": "อายุยังไม่เกิน 30 ปี เริ่มต้นทำงาน เก็บเงินเก็บทอง", "score": 3}, {"label": "อายุเกิน 30 แต่ไม่เกิน 55 ปี อยู่ในวัยทำงาน มีเงินเก็บเงินก้อน", "score": 2}, {"label": "อายุเกิน 55 ปี ใกล้เกษียณอยากพักผ่อน", "score": 1}]},
-        {"q": "Q2: ในเรื่องการลงทุนเมื่อพูดถึง “ความผันผวน” คุณนึกถึงอะไรเป็นอันดับแรก", "choices": [{"label": "นี่แหละโอกาสทอง ขึ้นก็ขาย ลงก็ซื้อ ได้กำไรตั้งหลายรอบ", "score": 3}, {"label": "ที่ไหนมีความผันผวน ที่นั่นมีความไม่แน่นอน", "score": 2}, {"label": "แย่แล้วถ้าราคาตก ก็ขาดทุนสิ!!", "score": 1}]},
+        {"q": "Q2: ในเรื่องการลงทุนเมื่อพูดถึง 'ความผันผวน' คุณนึกถึงอะไรเป็นอันดับแรก", "choices": [{"label": "นี่แหละโอกาสทอง ขึ้นก็ขาย ลงก็ซื้อ ได้กำไรตั้งหลายรอบ", "score": 3}, {"label": "ที่ไหนมีความผันผวน ที่นั่นมีความไม่แน่นอน", "score": 2}, {"label": "แย่แล้วถ้าราคาตก ก็ขาดทุนสิ!!", "score": 1}]},
         {"q": "Q3: สไตล์การลงทุนที่ผ่านมาของคุณเป็นแบบไหน", "choices": [{"label": "กล้าได้กล้าเสีย ถึงเวลาต้องยอมตัดขาดทุน แล้วไปลุยใหม่ สร้างกำไรสูงๆ", "score": 3}, {"label": "ช้าแต่ชัวร์ ได้น้อยดีกว่าไม่ได้ แต่ไม่อยากขาดทุน", "score": 1}, {"label": "แล้วแต่จังหวะ แล้วแต่โอกาส บางทีก็เสี่ยงบ้าง มีกำไรพอประมาณ", "score": 2}]},
         {"q": "Q4: หากลงทุนแล้วขาดทุน อะไรคือสาเหตุในความคิดของคุณ", "choices": [{"label": "การตัดสินใจที่ผิดพลาดของตัวเรา", "score": 3}, {"label": "เป็นเพราะความไม่แน่นอนของตลาดและภาวะการลงทุน", "score": 1}, {"label": "ก็ทั้งตัวเราแล้วก็ภาวะการลงทุนนั่นแหละ", "score": 2}]},
         {"q": "Q5: ลองหลับตาแล้วมองไปข้างหน้าในอีก 1 ปี คุณอยากเห็นอะไรจากเงินลงทุน", "choices": [{"label": "ผลตอบแทนแน่นอน 5%", "score": 1}, {"label": "หวังกำไรถึง 10% แต่ถ้าโชคไม่ดีขาดทุนก็ยอมได้สัก 5%", "score": 2}, {"label": "หวังกำไรถึง 20% แต่ถ้าโชคไม่ดีขาดทุนก็ยอมได้สัก 10%", "score": 3}]},
         {"q": "Q6: ถ้าคุณโชคดีถูกล๊อตเตอรี่ได้เงินรางวัล 500,000 บาท คุณจะนำเงินไปลงทุนอะไร", "choices": [{"label": "ฝากประจำหรือพันธบัตรรัฐบาล เงินต้นอยู่ครบ ผลตอบแทนน้อยหน่อยแต่แน่นอน", "score": 1}, {"label": "แบ่งครึ่งหนึ่งไปซื้อหุ้นสามัญ อีกครึ่งหนึ่งไปซื้อพันธบัตรรัฐบาล", "score": 2}, {"label": "โชคดีแบบนี้ไม่ต้องกลัว ซื้อหุ้นไปเลย", "score": 3}]},
         {"q": "Q7: การได้ไปท่องเที่ยวต่างประเทศแบบหรูหรา เป็นความใฝ่ฝันของคุณที่อุตส่าห์เก็บหอมรอมริบมานานหลายปี ทว่าก่อนจองโปรแกรมท่องเที่ยว คุณโดนเลิกจ้างกะทันหันจากนโยบายลดจำนวนพนักงานของบริษัท คุณจะตัดสินใจอย่างไร", "choices": [{"label": "ยกเลิกโปรแกรมท่องเที่ยว จนกว่าจะหางานใหม่ได้", "score": 1}, {"label": "เปลี่ยนแผนท่องเที่ยว ไปแบบประหยัดแทน", "score": 2}, {"label": "จองโปรแกรมและไปเที่ยวตามเดิม กลับมาค่อยว่ากัน", "score": 3}]},
         {"q": "Q8: คุณได้ร่วมรายการเกมโชว์ เล่นได้ถึงรอบลึกๆ และมาถึงทางเลือกที่ว่าจะเล่นต่อหรือหยุดเล่น ด้วยเงื่อนไขต่างๆ คุณจะเลือกอย่างไร", "choices": [{"label": "หยุดเล่นแล้วรับเงินรางวัล 30,000 บาท", "score": 1}, {"label": "เล่นต่อกับคำถาม 2 ตัวเลือก ตอบถูกรับเงิน 60,000 บาท ตอบผิดไม่ได้อะไรเลย", "score": 2}, {"label": "เล่นต่อกับคำถาม 4 ตัวเลือก ตอบถูกรับเงิน 120,000 บาท ตอบผิดไม่ได้อะไรเลย", "score": 3}]},
-        {"q": "Q9: เพื่อนของคุณที่เก่งด้านการค้าที่ดิน มาชวนลงทุนซื้อที่ดินด้วยกัน และคาดว่าราคามีโอกาสจะเพิ่มจากตารางวาละ 20,000 บาท เป็น 40,000 บาท ในอีก 1 ปีข้างหน้า แต่ก็มีโอกาสที่ราคาจะไม่เพิ่มขึ้นอยู่เหมือนกัน คุณจะร่วมลงทุนก็ต่อเมื่อโอกาสที่ราคาที่ดินจะเพิ่มขึ้นเป็นแบบใด ", "choices": [{"label": "ถึงจะเป็นไปได้น้อย ก็อยากลงทุนด้วย", "score": 3}, {"label": "ต้องมีความเป็นไปได้ปานกลาง ถึงจะลงทุนด้วย", "score": 2}, {"label": "ต้องเป็นไปได้มากๆ หน่อย ถึงจะลงทุนด้วย", "score": 1}]},
-        {"q": "Q10: เจ้าของธุรกิจแห่งหนึ่งชวนคุณไปทำงานด้วย โดยมีเงื่อนไขระหว่าง ให้รับผลตอบแทนเป็นเงินเดือนที่แน่นอน หรือรับเงินเดือนน้อยหน่อยแต่มีค่านายหน้าตามผลงานยอดขายที่ทำได้ คุณจะเลือกรับผลตอบแทนแบบใด", "choices": [{"label": "เอารายได้แน่นอนดีกว่า เลือกรับเงินเดือนเป็นหลัก ค่านายหน้านิดหน่อย", "score": 1}, {"label": "เลือกแบบสมดุล รับเงินเดือนครึ่งหนึ่ง ค่านายหน้าอีกครึ่งหนึ่ง", "score": 2}, {"label": "เลือกรับรายได้ตามผลงาน เน้นค่านายหน้าเป็นหลัก เงินเดือนเล็กน้อย", "score": 3}]}
+        {"q": "Q9: เพื่อนของคุณที่เก่งด้านการค้าที่ดิน มาชวนลงทุนซื้อที่ดินด้วยกัน คุณจะร่วมลงทุนก็ต่อเมื่อโอกาสที่ราคาที่ดินจะเพิ่มขึ้นเป็นแบบใด", "choices": [{"label": "ถึงจะเป็นไปได้น้อย ก็อยากลงทุนด้วย", "score": 3}, {"label": "ต้องมีความเป็นไปได้ปานกลาง ถึงจะลงทุนด้วย", "score": 2}, {"label": "ต้องเป็นไปได้มากๆ หน่อย ถึงจะลงทุนด้วย", "score": 1}]},
+        {"q": "Q10: เจ้าของธุรกิจแห่งหนึ่งชวนคุณไปทำงานด้วย คุณจะเลือกรับผลตอบแทนแบบใด", "choices": [{"label": "เอารายได้แน่นอนดีกว่า เลือกรับเงินเดือนเป็นหลัก ค่านายหน้านิดหน่อย", "score": 1}, {"label": "เลือกแบบสมดุล รับเงินเดือนครึ่งหนึ่ง ค่านายหน้าอีกครึ่งหนึ่ง", "score": 2}, {"label": "เลือกรับรายได้ตามผลงาน เน้นค่านายหน้าเป็นหลัก เงินเดือนเล็กน้อย", "score": 3}]}
     ]
 
-    # --- HELPER: PERSISTENT RADIO BUTTON ---
     def persistent_radio(key_suffix, options, label):
-        # 1. DEFINE KEYS
-        idx_key = f"idx_{key_suffix}"  # Stores the Integer Index (0, 1, 2)
-        ui_key = f"ui_{key_suffix}"    # Widget Key
-
-        # 2. SYNC FUNCTION
+        idx_key = f"idx_{key_suffix}"
+        ui_key  = f"ui_{key_suffix}"
         def on_change():
-            # Get the selected object (dict)
             selected_obj = st.session_state[ui_key]
-            # Find its index in the options list
-            try:
-                new_idx = options.index(selected_obj)
-            except:
-                new_idx = None
-            # Save the index permanently
+            try: new_idx = options.index(selected_obj)
+            except: new_idx = None
             st.session_state[idx_key] = new_idx
-
-        # 3. RENDER WIDGET
-        # Retrieve saved index (default to None if not found)
         saved_idx = st.session_state.get(idx_key, None)
-
-        return st.radio(
-            label,
-            options,
-            format_func=lambda x: x["label"],
-            index=saved_idx,    # <--- Loads previous selection
-            key=ui_key,         # Unique UI key
-            on_change=on_change,
-            label_visibility="collapsed"
-        )
+        return st.radio(label, options, format_func=lambda x: x["label"],
+                        index=saved_idx, key=ui_key, on_change=on_change, label_visibility="collapsed")
 
     @st.dialog("🎯 ข้อแนะนำการลงทุนตามระดับความเสี่ยงของคุณ")
     def show_risk_advice():
-        # ดึงค่าจาก session_state แทนการรับผ่าน arguments
         profile = st.session_state.get("risk_profile", "ไม่ระบุ")
-        score = st.session_state.get("risk_score", 0)
+        score   = st.session_state.get("risk_score", 0)
         st.write(f"ระดับความเสี่ยงของคุณคือ: **{profile}** **(คะแนน: {score}**)")
-        
-        if "1" in profile: # Conservative
-            advice = "เน้นรักษาเงินต้นเป็นหลัก เหมาะสำหรับผู้ที่รับความเสี่ยงได้น้อยมาก"
-            data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
-                    "สัดส่วน": ["100%", "0%", "0%"]}
-        elif "2" in profile: # Moderate Conservative
-            advice = "ยอมรับความเสี่ยงได้บ้าง เพื่อโอกาสรับผลตอบแทนที่สูงกว่าเงินฝาก"
-            data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
-                    "สัดส่วน": ["80%", "10%", "10%"]}
-        elif "3" in profile: # Moderate
-            advice = "สมดุลระหว่างผลตอบแทนและความเสี่ยง (60/40 Portfolio)"
-            data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
-                    "สัดส่วน": ["60%", "25%", "25%"]}
-        elif "4" in profile: # Moderate Aggressive
-            advice = "เน้นสร้างความมั่งคั่งในระยะยาว ยอมรับความผันผวนได้สูง"
-            data = {"สินทรัพย์": ["ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
-                    "สัดส่วน": ["50%", "30%", "20%"]}
-        else: # 5: Aggressive
-            advice = "เน้นการเติบโตสูงสุด ยอมรับการขาดทุนชั่วคราวได้ในระดับสูงมาก"
-            data = {"สินทรัพย์": ["ตราสารหนี้", "หุ้นไทย/ต่างประเทศ", "สินทรัพย์ทางเลือก"], 
-                    "สัดส่วน": ["40%", "40%", "20%"]}
-
+        if "1" in profile:
+            advice = "เน้นรักษาเงินต้นเป็นหลัก"
+            data = {"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","สินทรัพย์ทางเลือก"],"สัดส่วน":["100%","0%","0%"]}
+        elif "2" in profile:
+            advice = "ยอมรับความเสี่ยงได้บ้าง"
+            data = {"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","สินทรัพย์ทางเลือก"],"สัดส่วน":["80%","10%","10%"]}
+        elif "3" in profile:
+            advice = "สมดุลระหว่างผลตอบแทนและความเสี่ยง (60/40)"
+            data = {"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","สินทรัพย์ทางเลือก"],"สัดส่วน":["60%","25%","25%"]}
+        elif "4" in profile:
+            advice = "เน้นสร้างความมั่งคั่งในระยะยาว"
+            data = {"สินทรัพย์":["ตราสารหนี้","หุ้น","สินทรัพย์ทางเลือก"],"สัดส่วน":["50%","30%","20%"]}
+        else:
+            advice = "เน้นการเติบโตสูงสุด"
+            data = {"สินทรัพย์":["ตราสารหนี้","หุ้น","สินทรัพย์ทางเลือก"],"สัดส่วน":["40%","40%","20%"]}
         st.info(f"💡 **คำแนะนำ:** {advice}")
         st.table(data)
-        if st.button("ยืนยันผลประเมินและไปหน้าถัดไป ➡",type="primary",use_container_width=True):
-            next_step() 
-            st.rerun()
+        if st.button("ยืนยันผลประเมินและไปหน้าถัดไป ➡", type="primary", use_container_width=True):
+            next_step(); st.rerun()
 
-    # --- RENDER QUESTIONS ---
-    total_score = 0
+    total_score  = 0
     all_answered = True
-    
     for i, item in enumerate(questions_data):
         st.subheader(item["q"])
-        
-        # Use our new persistent helper
         choice = persistent_radio(f"q_{i}", item["choices"], f"Radio_{i}")
-        
         st.divider()
-        
-        if choice is None:
-            all_answered = False
-        else:
-            total_score += int(choice["score"])
+        if choice is None: all_answered = False
+        else: total_score += int(choice["score"])
 
-    # --- SCORING ---
     if all_answered:
-    # แบ่งช่วงคะแนนเป็น 5 ระดับ (อิงตามมาตรฐานสมาคมบริษัทจัดการลงทุน)
-        if total_score >= 26:
-            profile = "ระดับ 5: เสี่ยงสูงมาก (Aggressive)"
-        elif total_score >= 22:
-            profile = "ระดับ 4: เสี่ยงสูง (Moderate Aggressive)"
-        elif total_score >= 18:
-            profile = "ระดับ 3: เสี่ยงปานกลางค่อนข้างสูง (Moderate)"
-        elif total_score >= 14:
-            profile = "ระดับ 2: เสี่ยงปานกลางค่อนข้างต่ำ (Moderate Conservative)"
-        elif total_score == 10:
-            profile = "ระดับ 1: เสี่ยงต่ำ (Conservative)"
-        st.success(f"คะแนน: {total_score} - {profile}")  
-        
-        # Save profile for later use
+        if   total_score >= 26: profile = "ระดับ 5: เสี่ยงสูงมาก (Aggressive)"
+        elif total_score >= 22: profile = "ระดับ 4: เสี่ยงสูง (Moderate Aggressive)"
+        elif total_score >= 18: profile = "ระดับ 3: เสี่ยงปานกลางค่อนข้างสูง (Moderate)"
+        elif total_score >= 14: profile = "ระดับ 2: เสี่ยงปานกลางค่อนข้างต่ำ (Moderate Conservative)"
+        else:                   profile = "ระดับ 1: เสี่ยงต่ำ (Conservative)"
+        st.success(f"คะแนน: {total_score} - {profile}")
         st.session_state["risk_profile"] = profile
-        st.session_state["risk_score"] = total_score
-
+        st.session_state["risk_score"]   = total_score
         c1, c2 = st.columns([1, 8])
-        with c1:
-            st.button("⬅ Back", on_click=prev_step)
+        with c1: st.button("⬅ Back", on_click=prev_step)
         with c2:
             if st.button("Next Step ➡", type="primary", disabled=not all_answered):
                 show_risk_advice()
     else:
-    # หน้าอื่นๆ (เช่น หน้า 1) ให้ใช้ปุ่ม Next ปกติที่เรียก next_step โดยตรง
         c1, c2 = st.columns([1, 8])
-        with c1:
-            st.button("⬅ Back", on_click=prev_step)
-        with c2:
-            st.button("Next Step ➡", on_click=next_step, type="primary")
+        with c1: st.button("⬅ Back", on_click=prev_step)
+        with c2: st.button("Next Step ➡", on_click=next_step, type="primary")
+
 # =========================================================
-# PAGE 3: ASSET ALLOCATION (Clean Input Version)
+# PAGE 3: ASSET ALLOCATION
 # =========================================================
 elif st.session_state["current_step"] == 2:
     st.header("📊 3. จัดพอร์ตการลงทุน (Asset Allocation)")
 
-    curr_cash     = st.session_state.get("v_cash_dep", 0.0)
-    curr_bond     = st.session_state.get("v_bond", 0.0)
-    curr_stock    = st.session_state.get("v_stock", 0.0)
-    curr_reit     = st.session_state.get("v_reit", 0.0)
-    curr_gl_bond  = st.session_state.get("v_gl_bond", 0.0)
-    curr_gl_stock = st.session_state.get("v_gl_stock", 0.0)
-    curr_gl_reit  = st.session_state.get("v_gl_reit", 0.0)
+    curr_cash     = st.session_state.get("v_cash_dep",    0.0)
+    curr_bond     = st.session_state.get("v_bond",        0.0)
+    curr_stock    = st.session_state.get("v_stock",       0.0)
+    curr_reit     = st.session_state.get("v_reit",        0.0)
+    curr_gl_bond  = st.session_state.get("v_gl_bond",     0.0)
+    curr_gl_stock = st.session_state.get("v_gl_stock",    0.0)
+    curr_gl_reit  = st.session_state.get("v_gl_reit",     0.0)
     curr_gold     = st.session_state.get("v_gold_invest", 0.0)
 
-    # --- การเรียกใช้ Widget ในหน้า 3 ---
-    # ใช้ key_suffix ใหม่ (เช่น p3_...) เพื่อไม่ให้ชนกับหน้า 1 
-    # แต่ส่งค่า curr_... ที่ดึงมาเป็นค่าเริ่มต้น
-    val_deposit = money_input("Deposit (THB)", curr_cash, "p3_deposit")
+    val_deposit    = money_input("Fix Deposit (THB)", curr_cash, "p3_deposit")
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Thai Assets")
-        val_gov_bond = money_input("Government Bond (THB) - THAT Index", curr_bond, "p3_gov_bond")
-        val_seti     = money_input("Thai Stock (THB) - SET Index", curr_stock, "p3_seti")
-        val_reit     = money_input("PF&REIT (THB) - SETPREIT Index  ", curr_reit, "p3_reit")
+        val_gov_bond = money_input("Government Bond (THB) - THAT Index",    curr_bond,     "p3_gov_bond")
+        val_seti     = money_input("Thai Stock (THB) - SET Index",           curr_stock,    "p3_seti")
+        val_reit     = money_input("PF&REIT (THB) - SETPREIT Index",         curr_reit,     "p3_reit")
     with c2:
         st.subheader("Global Assets")
-        val_msci_gov   = money_input("Global Government Bond (THB) - LEGATRUU Index", curr_gl_bond, "p3_msci_gov")
-        val_msci_stock = money_input("Global Stock (THB) - MXWD Index ", curr_gl_stock, "p3_msci_stock")
-        val_msci_reits = money_input("Global REITs (THB) - NDUWREIT Index", curr_gl_reit, "p3_mscireits")
-        val_gold       = money_input("Gold (THB) - XAUUSD", curr_gold, "p3_gold")
-        
-    total_port_value = (val_deposit + val_gov_bond + val_seti + val_reit +
-                        val_msci_gov + val_msci_stock + val_msci_reits + val_gold)
+        val_msci_gov   = money_input("Global Government Bond (THB) - LEGATRUU", curr_gl_bond,  "p3_msci_gov")
+        val_msci_stock = money_input("Global Stock (THB) - MXWD Index",         curr_gl_stock, "p3_msci_stock")
+        val_msci_reits = money_input("Global REITs (THB) - NDUWREIT Index",      curr_gl_reit,  "p3_mscireits")
+        val_gold       = money_input("Gold (THB) - XAUTHB",                      curr_gold,     "p3_gold")
+
+    total_port_value = val_deposit + val_gov_bond + val_seti + val_reit + val_msci_gov + val_msci_stock + val_msci_reits + val_gold
 
     if total_port_value > 0:
         st.markdown(f"### 💰 Total Portfolio: **{total_port_value:,.0f}** THB")
         alloc = {
-            "pct_deposit": val_deposit / total_port_value,
-            "pct_gov_bond": val_gov_bond / total_port_value,
-            "pct_seti": val_seti / total_port_value,
-            "pct_gold": val_gold / total_port_value,
-            "pct_REIT": val_reit / total_port_value,
-            "pct_msci_gov_bond": val_msci_gov / total_port_value,
-            "pct_msci_stock": val_msci_stock / total_port_value,
-            "pct_msci_reit":val_msci_reits/total_port_value
+            "pct_deposit":       val_deposit    / total_port_value,
+            "pct_gov_bond":      val_gov_bond   / total_port_value,
+            "pct_seti":          val_seti       / total_port_value,
+            "pct_gold":          val_gold       / total_port_value,
+            "pct_REIT":          val_reit       / total_port_value,
+            "pct_msci_gov_bond": val_msci_gov   / total_port_value,
+            "pct_msci_stock":    val_msci_stock / total_port_value,
+            "pct_msci_reit":     val_msci_reits / total_port_value,
         }
-        
-        st.session_state["saved_alloc"] = alloc
-        st.session_state["final_total_wealth"] = total_port_value
-            
+        st.session_state["saved_alloc"]         = alloc
+        st.session_state["final_total_wealth"]  = total_port_value
     else:
         st.warning("⚠️ Please enter asset values to continue.")
 
-    # --- NAV ---
     cn1, cn2 = st.columns([1, 8])
     cn1.button("⬅ Back", on_click=prev_step)
     cn2.button("Next Step ➡", type="primary", on_click=next_step)
+
 # =========================================================
-# PAGE 4: SIMULATION + EXPORT (wd_rate only, no cashflow mode)
+# PAGE 4: SIMULATION + EXPORT
 # =========================================================
 elif st.session_state["current_step"] == 3:
     st.header("💸 4.กลยุทธ์การถอนเงิน")
@@ -1407,171 +1320,145 @@ elif st.session_state["current_step"] == 3:
     N_SIM = 50000
 
     asset_stats = {
-        "pct_deposit": {"mean": 0.0200, "std": 0.0100},
-        "pct_gov_bond": {"mean": 0.0348, "std": 0.0244},  
-        "pct_seti": {"mean": 0.0547, "std": 0.2729},     
-        "pct_REIT": {"mean": 0.0626, "std": 0.1119},     
-        "pct_msci_stock": {"mean": 0.0945, "std": 0.1564},
+        "pct_deposit":       {"mean": 0.0200, "std": 0.0100},
+        "pct_gov_bond":      {"mean": 0.0348, "std": 0.0244},
+        "pct_seti":          {"mean": 0.0547, "std": 0.2729},
+        "pct_REIT":          {"mean": 0.0626, "std": 0.1119},
+        "pct_msci_stock":    {"mean": 0.0945, "std": 0.1564},
         "pct_msci_gov_bond": {"mean": 0.0557, "std": 0.0983},
-        "pct_msci_reit": {"mean": 0.0626, "std": 0.1119},
-        "pct_gold": {"mean": 0.0836, "std": 0.1601}      
+        "pct_msci_reit":     {"mean": 0.0626, "std": 0.1119},
+        "pct_gold":          {"mean": 0.0836, "std": 0.1601},
     }
 
-    alloc = st.session_state.get("saved_alloc", {})
-   # --- 2. DATA SOURCE ---
+    alloc      = st.session_state.get("saved_alloc", {})
+    start_port = st.session_state.get("start_port", 1_000_000.0)
+    inflation  = st.session_state.get("inflation", 0.03)
+    retire_age = st.session_state.get("retire_age", 60)
+    inheritance= st.session_state.get("inheritance_goal", 0.0)
+
+    # Pull timed items from page 1
+    timed_debt_items    = st.session_state.get("timed_debt_items", [])
+    timed_expense_items = st.session_state.get("timed_expense_items", [])
+    all_timed_items     = timed_debt_items + timed_expense_items
+
+    base_annual_expense = st.session_state.get("v_total_expense", 0.0)
+    base_annual_income  = st.session_state.get("v_total_income",  0.0)
+
+    # Build cashflow schedule (replaces flat withdrawal rate if cashflow mode is used)
+    # Only items with years_remaining set are timed; others are permanent.
+    timed_for_schedule = [
+        {"annual_amount": it["annual_amount"], "years_remaining": it["years_remaining"]}
+        for it in all_timed_items
+        if it.get("years_remaining") is not None and it["annual_amount"] > 0
+    ]
+    has_timed_items = len(timed_for_schedule) > 0
+
+    # ---- Show a preview of cashflow schedule ----
+    if has_timed_items:
+        st.info("⏱ ตรวจพบรายจ่ายที่มีระยะเวลาสิ้นสุด — ระบบจะใช้ **Cashflow Schedule Mode** ในการจำลอง")
+        cf_schedule = RetirementSimulator.build_cashflow_schedule(
+            base_annual_expense=base_annual_expense,
+            base_annual_income=base_annual_income,
+            timed_items=timed_for_schedule,
+            total_years=YEARS,
+            inflation_rate=inflation,
+        )
+        # Quick chart
+        fig_cf, ax_cf = plt.subplots(figsize=(10, 3))
+        ax_cf.bar(range(1, YEARS+1), cf_schedule, color='steelblue', alpha=0.7)
+        ax_cf.set_xlabel("Year"); ax_cf.set_ylabel("Net Withdrawal (THB)")
+        ax_cf.set_title("📅 Net Withdrawal Schedule (Debt & Expenses Expiring Over Time)")
+        ax_cf.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x,p: format(int(x),',')))
+        st.pyplot(fig_cf)
+        plt.close(fig_cf)
+    else:
+        cf_schedule = None
+
+    # ---- Data source ----
     st.markdown("### 📂 Data Assumptions")
     data_mode = st.radio("Choose Source:", ["Use Default Assumptions", "Upload Bloomberg Files"], horizontal=True)
-
-    custom_mean = None
-    custom_cov = None
+    custom_mean = None; custom_cov = None
 
     if data_mode == "Upload Bloomberg Files":
-        st.info("💡 **Instructions:** Upload your Asset files AND a USD/THB Exchange Rate file.")
-        
-        uploaded_files = st.file_uploader(
-            "Upload Excel/CSV files here:", 
-            type=["csv", "xlsx", "xls"], 
-            accept_multiple_files=True
-        )
-        
-        # MAPPING: Includes the specific "USD/THB Exchange Rate" option
+        st.info("💡 Upload your Asset files AND a USD/THB Exchange Rate file.")
+        uploaded_files = st.file_uploader("Upload Excel/CSV files here:", type=["csv","xlsx","xls"], accept_multiple_files=True)
         sys_map = {
             "Select Option...": "ignore",
-            "🔴 USD/THB Exchange Rate": "rate_usd_thb",  # <--- CRITICAL
+            "🔴 USD/THB Exchange Rate": "rate_usd_thb",
             "-----------------------": "ignore",
             "Thai Government Bond": "pct_gov_bond",
-            "Thai Equity (SET)": "pct_seti",
-            "Thai REITs": "pct_REIT",
+            "Thai Equity (SET)":    "pct_seti",
+            "Thai REITs":           "pct_REIT",
             "Global Stocks (MSCI)": "pct_msci_stock",
-            "Global Bond": "pct_msci_gov_bond",
-            "Global REITs": "pct_msci_reit",
-            "Gold":"pct_gold"
+            "Global Bond":          "pct_msci_gov_bond",
+            "Global REITs":         "pct_msci_reit",
+            "Gold":                 "pct_gold"
         }
-        
         if uploaded_files:
             st.markdown("#### 🔗 Map Files & Select Currency")
-            
-            # Temporary storage
-            file_configs = []     
-            parsed_series = {}    
-            
-            # --- STEP 1: UI LOOP (Get User Inputs) ---
+            file_configs = []; parsed_series = {}
             for f in uploaded_files:
-                # Layout: File Name | Asset Type | Currency
-                c1, c2, c3 = st.columns([3, 3, 2])
-                
+                c1, c2, c3 = st.columns([3,3,2])
                 c1.write(f"📄 **{f.name}**")
-                
-                # 1. Asset Type Selector
-                choice_label = c2.selectbox(
-                    "Map to:", 
-                    list(sys_map.keys()), 
-                    key=f"map_{f.name}", 
-                    label_visibility="collapsed"
-                )
-                asset_code = sys_map[choice_label]
-                
-                # 2. Currency Selector (Only if it's an asset, not the rate itself)
+                choice_label = c2.selectbox("Map to:", list(sys_map.keys()), key=f"map_{f.name}", label_visibility="collapsed")
+                asset_code   = sys_map[choice_label]
                 currency = "THB"
-                if asset_code != "ignore" and asset_code != "rate_usd_thb":
-                    currency = c3.radio(
-                        "Currency:", 
-                        ["THB", "USD"], 
-                        key=f"curr_{f.name}", 
-                        horizontal=True,
-                        label_visibility="collapsed"
-                    )
-                
-                # Store config if valid
+                if asset_code not in ("ignore","rate_usd_thb"):
+                    currency = c3.radio("Currency:", ["THB","USD"], key=f"curr_{f.name}", horizontal=True, label_visibility="collapsed")
                 if asset_code != "ignore":
-                    file_configs.append({
-                        "file": f, 
-                        "code": asset_code, 
-                        "curr": currency
-                    })
+                    file_configs.append({"file":f,"code":asset_code,"curr":currency})
 
-            # --- STEP 2: PARSING & PROCESSING ---
             if file_configs:
-                # A. Parse All Files
                 usd_rate_series = None
-                
                 for cfg in file_configs:
-                    s, err = parse_bloomberg_file(cfg["file"]) # Uses your "Ultimate Parser"
+                    s, err = parse_bloomberg_file(cfg["file"])
                     if not err:
                         parsed_series[cfg["code"]] = s
-                        # If this is the FX rate, save it specifically
-                        if cfg["code"] == "rate_usd_thb":
-                            usd_rate_series = s
+                        if cfg["code"] == "rate_usd_thb": usd_rate_series = s
                     else:
                         st.error(f"❌ Error in {cfg['file'].name}: {err}")
 
-                # B. Check if we need FX rate but don't have it
                 needs_usd = any(c["curr"] == "USD" for c in file_configs)
                 if needs_usd and usd_rate_series is None:
-                    st.error("🚨 You selected files as **USD**, but you haven't mapped a **USD/THB Exchange Rate** file yet!")
-                
-                # C. Build Final Dataframe
+                    st.error("🚨 You selected USD files but haven't mapped a USD/THB Exchange Rate file!")
                 else:
                     merged_df = pd.DataFrame()
-                    
                     for cfg in file_configs:
                         code = cfg["code"]
-                        if code == "rate_usd_thb": continue # Skip adding the raw rate to the portfolio
-                        
-                        raw_data = parsed_series.get(code)
-                        
-                        if raw_data is not None:
+                        if code == "rate_usd_thb": continue
+                        raw = parsed_series.get(code)
+                        if raw is not None:
                             if cfg["curr"] == "USD":
-                                # --- APPLY YOUR FORMULA (via Price alignment) ---
-                                # Formula: R_thb = (1+R_usd)*(1+R_fx) - 1
-                                # Implementation: Price_THB = Price_USD * FX_Rate
-                                
-                                # 1. Align Dates (Inner Join)
-                                aligned = pd.concat([raw_data, usd_rate_series], axis=1, join='inner').dropna()
-                                aligned.columns = ["Asset_USD", "FX_Rate"]
-                                
-                                # 2. Convert to THB
-                                thb_series = aligned["Asset_USD"] * aligned["FX_Rate"]
-                                merged_df[code] = thb_series
-                                
-                                st.caption(f"✅ Converted **{cfg['file'].name}** to THB (Matched {len(thb_series)} days)")
+                                aligned = pd.concat([raw, usd_rate_series], axis=1, join='inner').dropna()
+                                aligned.columns = ["Asset_USD","FX_Rate"]
+                                merged_df[code] = aligned["Asset_USD"] * aligned["FX_Rate"]
+                                st.caption(f"✅ Converted {cfg['file'].name} to THB")
                             else:
-                                # Already THB
-                                merged_df[code] = raw_data
+                                merged_df[code] = raw
 
-                    # D. Verification & Saving
                     if not merged_df.empty:
                         try:
-                            # Use Annualized Monthly Returns (Best Method)
                             df_monthly = merged_df.resample('ME').last().pct_change().dropna()
-                            
                             if len(df_monthly) > 36:
-                                st.success(f"✅ Data Ready! Found {len(df_monthly)} months of valid data.")
-                                
-                                # --- VERIFICATION TABLE ---
-                                st.markdown("##### 🔍 Data Verification (All in THB)")
+                                st.success(f"✅ Data Ready! {len(df_monthly)} months.")
                                 verify_df = pd.DataFrame({
-                                    "Monthly Return": df_monthly.mean() * 100,
-                                    "Annual Return": df_monthly.mean() * 12 * 100,
-                                    "Volatility": df_monthly.std() * (12**0.5) * 100
+                                    "Monthly Return":  df_monthly.mean()*100,
+                                    "Annual Return":   df_monthly.mean()*12*100,
+                                    "Volatility":      df_monthly.std()*(12**0.5)*100
                                 })
                                 st.dataframe(verify_df.style.format("{:.2f}%"))
-                                # --------------------------
-
-                                custom_mean = (df_monthly.mean() * 12).to_dict()
-                                custom_cov = df_monthly.cov() * 12
-                                
+                                custom_mean = (df_monthly.mean()*12).to_dict()
+                                custom_cov  = df_monthly.cov()*12
                                 st.session_state["custom_mean"] = custom_mean
-                                st.session_state["custom_cov"] = custom_cov
+                                st.session_state["custom_cov"]  = custom_cov
                             else:
-                                st.warning("⚠️ Not enough overlapping data (need >3 years).")
+                                st.warning("⚠️ Not enough data (need >3 years).")
                         except Exception as e:
                             st.error(f"Calculation Error: {e}")
 
-    # Use saved custom data
     if data_mode == "Upload Bloomberg Files" and "custom_mean" in st.session_state:
         custom_mean = st.session_state["custom_mean"]
-        custom_cov = st.session_state["custom_cov"]
+        custom_cov  = st.session_state["custom_cov"]
 
     c1, c2 = st.columns(2)
     strat_options = ["Basic Strategy", "Forgoing Inflation", "RMD Strategy", "Guardrails"]
@@ -1579,99 +1466,67 @@ elif st.session_state["current_step"] == 3:
         strat_selection = st.selectbox("กลยุทธ์", strat_options)
         st.session_state["sim_strat"] = strat_selection
     with c2:
-        wd_rate = st.number_input("อัตราการถอน (%)", 3.0, 10.0, 4.0, 0.1) / 100
+        wd_rate = st.number_input("อัตราการถอน (%) — ใช้เมื่อไม่มี Cashflow Schedule", 3.0, 10.0, 4.0, 0.1) / 100
+        if has_timed_items:
+            st.caption("⚠️ Cashflow Schedule Mode active — withdrawal rate ignored")
 
-    start_port = st.session_state.get("start_port", 1_000_000.0)
-    inflation = st.session_state.get("inflation", 0.03)
-    retire_age = st.session_state.get("retire_age", 60)
-    inheritance = st.session_state.get("inheritance_goal", 0.0)
-
-
-    # =========================
-    # 1) RUN SIMULATION (generate returns once, reuse later)
-    # =========================
+    # ---- RUN ----
     if st.button("🚀 Run Simulation", type="primary"):
         sim = RetirementSimulator()
         with st.spinner("Simulating..."):
             mc_returns = sim.simulate_returns(alloc, asset_stats, N_SIM, YEARS)
-            st.session_state["mc_returns"] = mc_returns 
+            st.session_state["mc_returns"] = mc_returns
 
             res = sim.run_simulation(
-                initial_portfolio=start_port,
-                portfolio_allocation=alloc,
-                asset_stats=asset_stats,
-                withdrawal_strategy=strat_selection,
-                withdrawal_rate=wd_rate,
-                n_simulations=N_SIM,
-                years=YEARS,
-                inflation_rate=inflation,
-                starting_age=retire_age,
-                inheritance_goal=inheritance)
+                initial_portfolio    = start_port,
+                portfolio_allocation = alloc,
+                asset_stats          = asset_stats,
+                withdrawal_strategy  = strat_selection,
+                withdrawal_rate      = wd_rate,
+                n_simulations        = N_SIM,
+                years                = YEARS,
+                inflation_rate       = inflation,
+                starting_age         = retire_age,
+                inheritance_goal     = inheritance,
+                cashflow_schedule    = cf_schedule,
+            )
 
-        st.session_state["res"] = res
+        st.session_state["res"]       = res
         st.session_state["sim_strat"] = strat_selection
-        st.session_state["wd_rate"] = wd_rate
-
-        # clear export cache
+        st.session_state["wd_rate"]   = wd_rate
         st.session_state.pop("export_pdf_bytes", None)
         st.session_state.pop("export_csv_bytes", None)
 
-    # =========================
-    # 2) RESULTS
-    # =========================
+    # ---- RESULTS ----
     if "res" in st.session_state:
-        res = st.session_state["res"]
-        inh_goal = st.session_state.get("inheritance_goal", 0.0) # Retrieve goal
-        
-        success = res["survival_rate"] * 100
-        inh_success = res.get("inheritance_success_rate", 0.0) * 100 # Retrieve new rate
-        median_end = res["median_balance"][-1]
+        res      = st.session_state["res"]
+        inh_goal = st.session_state.get("inheritance_goal", 0.0)
+        success      = res["survival_rate"] * 100
+        inh_success  = res.get("inheritance_success_rate", 0.0) * 100
+        median_end   = res["median_balance"][-1]
 
         st.divider()
-        
-        # Updated Metrics Layout
         m1, m2, m3 = st.columns(3)
-        
         color_surv = "green" if success > 85 else "red"
         m1.markdown(f"### Survival Rate: :{color_surv}[{success:.1f}%]")
         m1.caption("Chance money lasts > 30 years")
-        
         m2.metric("Median End Balance", f"{median_end:,.0f} THB")
-        
-        # New Metric for Inheritance
-        color_inh = "green" if inh_success > 50 else "orange" # You can adjust this threshold
+        color_inh = "green" if inh_success > 50 else "orange"
         m3.markdown(f"### Inheritance Success: :{color_inh}[{inh_success:.1f}%]")
         m3.caption(f"Chance to leave ≥ {inh_goal:,.0f}")
 
-        # ✅ Graph Update
         fig, ax = plt.subplots(figsize=(10, 5))
         x = range(len(res["median_balance"]))
-        
-        # Plot areas
         ax.fill_between(x, res["percentile_10"], res["percentile_90"], alpha=0.2, label="10-90th Pctl")
         ax.plot(x, res["median_balance"], label="Median Balance")
-        
-        # 1. Zero Line (Depleted)
         ax.axhline(0, color='red', linestyle="--", linewidth=1, label="Depleted (0)")
-        
-        # 2. Inheritance Line (Only if goal > 0)
         if inh_goal > 0:
             ax.axhline(inh_goal, color='purple', linestyle="-.", linewidth=1.5, label=f"Inheritance Goal ({inh_goal:,.0f})")
-
         ax.legend(loc='upper left')
-        ax.set_xlabel("Year")
-        ax.set_ylabel("Portfolio Value (THB)")
-        ax.set_title("Wealth Projection")
-        
-        # Format Y-axis to standard comma notation
-        ax.get_yaxis().set_major_formatter(
-            plt.FuncFormatter(lambda x, p: format(int(x), ',')))
-
+        ax.set_xlabel("Year"); ax.set_ylabel("Portfolio Value (THB)"); ax.set_title("Wealth Projection")
+        ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x,p: format(int(x),',')))
         st.pyplot(fig)
 
-        # =========================
-        # 5) Recommendations
-        # =========================
         sim = RetirementSimulator()
         st.subheader("💡 Recommendations")
         if success < 85:
@@ -1682,168 +1537,128 @@ elif st.session_state["current_step"] == 3:
                 withdrawal_rate=st.session_state.get("wd_rate", wd_rate),
             )
             with st.expander("👉 View Action Plan", expanded=True):
-                for r in recs:
-                    st.info(r)
+                for r in recs: st.info(r)
         else:
-            st.success("✅ Your plan looks solid! You have a high chance of success.")
+            st.success("✅ Your plan looks solid!")
 
-        # =========================
-        # 6) Optimizer
-        # =========================
         st.divider()
         if st.button("🔍 Find Optimal Withdrawal Rate"):
             with st.spinner("Optimizing..."):
                 opt_rate = sim.find_optimal_withdrawal_rate(
-                    initial_portfolio=start_port,
-                    portfolio_allocation=alloc,
-                    asset_stats=asset_stats,
-                    withdrawal_strategy=st.session_state.get("sim_strat", "Basic Strategy"),
-                    initial_rate=st.session_state.get("wd_rate", wd_rate),
-                    years=YEARS,
-                    inflation_rate=inflation,
-                    starting_age=retire_age,
+                    initial_portfolio    = start_port,
+                    portfolio_allocation = alloc,
+                    asset_stats          = asset_stats,
+                    withdrawal_strategy  = st.session_state.get("sim_strat","Basic Strategy"),
+                    initial_rate         = st.session_state.get("wd_rate", wd_rate),
+                    years                = YEARS,
+                    inflation_rate       = inflation,
+                    starting_age         = retire_age,
+                    inheritance_goal     = inheritance,
+                    cashflow_schedule    = cf_schedule,
                 )
-
             curr = st.session_state.get("wd_rate", wd_rate)
             diff = opt_rate - curr
-
             c_opt1, c_opt2 = st.columns(2)
             c_opt1.metric("Current Rate", f"{curr*100:.2f}%")
             c_opt2.metric("Optimal Rate", f"{opt_rate*100:.2f}%", f"{diff*100:.2f}%")
+            if diff > 0: st.success(f"🎉 You can safely increase your withdrawal by {diff*100:.2f}%!")
+            else: st.warning(f"⚠️ You should reduce your withdrawal by {abs(diff*100):.2f}% to be safe.")
 
-            if diff > 0:
-                st.success(f"🎉 You can safely increase your withdrawal by {diff*100:.2f}%!")
-            else:
-                st.warning(f"⚠️ You should reduce your withdrawal by {abs(diff*100):.2f}% to be safe.")
-
-    # =========================================================
-    # EXPORT (Page 4 only) 
-    # =========================================================
+    # ---- EXPORT ----
     st.divider()
     st.subheader("💾 Save Your Plan")
-    # 1. ฟังก์ชันช่วยดึงค่าเพื่อ Export เป็นรายปี
-    def get_annual_safe(key_suffix):
-        # 1. ดึงค่าตัวเลข (ลองหาทั้ง v_prefix และไม่มี)
-        val = st.session_state.get(f"v_{key_suffix}")
-        if val is None:
-            val = st.session_state.get(key_suffix, 0.0)
-        
-        # แปลงเป็น float เสมอ (กันกรณีเป็น string หรือ None)
-        try:
-            val = float(val)
-        except:
-            val = 0.0
 
-        # 2. ดึงหน่วยเวลา (ล้อตามฟังก์ชัน cashflow_input ของคุณ)
+    def get_annual_safe(key_suffix):
+        val = st.session_state.get(f"v_{key_suffix}")
+        if val is None: val = st.session_state.get(key_suffix, 0.0)
+        try: val = float(val)
+        except: val = 0.0
         freq = st.session_state.get(f"freq_{key_suffix}", "ต่อปี (Yearly)")
-        
-        # 3. ตรวจสอบเงื่อนไขตัวหนังสือ (เพราะใน Widget คุณใช้ภาษาไทยผสมอังกฤษ)
         if freq and ("Monthly" in str(freq) or "เดือน" in str(freq)):
             return val * 12
         return val
 
     if st.button("✅ Prepare Export Files"):
-        res = st.session_state.get("res")
+        res   = st.session_state.get("res")
         alloc = st.session_state.get("saved_alloc", {})
-        name_final = st.session_state.get("user_name", "ไม่ระบุชื่อ")
-        ret_age_final = st.session_state.get("retire_age",65)
-        life_exp_final = st.session_state.get("life_expectancy", 85)
-        
-        ret_age_final = int(st.session_state.get("retire_age", 60))
+
+        ret_age_final  = int(st.session_state.get("retire_age", 60))
         life_exp_final = int(st.session_state.get("life_expectancy", 85))
 
-        # 1. Basic Profile Data
+        total_income   = st.session_state.get("v_total_income",  0.0)
+        total_expense  = st.session_state.get("v_total_expense", 0.0)
+        investable     = st.session_state.get("start_port",      0.0)
+        total_debt     = st.session_state.get("money_debt",      0.0)
+        net_saving     = total_income - total_expense
+
         export_data = {
-            "name": name_final,
-            "retire_age": ret_age_final,
-            "life_exp": life_exp_final,
-            "inflation": st.session_state.get("inflation", 0.03),
+            "name":             st.session_state.get("user_name","ไม่ระบุชื่อ"),
+            "retire_age":       ret_age_final,
+            "life_exp":         life_exp_final,
+            "inflation":        st.session_state.get("inflation", 0.03),
             "inheritance_goal": st.session_state.get("inheritance_goal", 0.0),
-            "sim_strat": strat_selection,
-            "wd_rate": st.session_state.get("wd_rate",wd_rate)
-        }
-
-        # 2. Financial Calculations
-        # Pull the totals we saved at the bottom of Page 1
-        total_income = st.session_state.get("v_total_income", 0.0)
-        total_expense = st.session_state.get("v_total_expense", 0.0)
-        investable = st.session_state.get("start_port", 0.0)
-        total_debt = st.session_state.get("money_debt", 0.0)
-        net_saving = total_income - total_expense
-
-        # 3. Update dictionary with ALL required keys
-        export_data.update({
-            "name": st.session_state.get("user_name", "ไม่ระบุชื่อ"),
-            "retire_age": st.session_state.get("retire_age", 60),
-            "life_exp": st.session_state.get("life_expectancy", 85),
-            "total_income": total_income,
-            "total_expense": total_expense,
-            "yearly_savings": net_saving,
-            "investable": investable,
-            "total_debt": total_debt,
-            "net_worth": investable - total_debt,         
-            # Detailed Breakdown for CSV
+            "sim_strat":        strat_selection,
+            "wd_rate":          st.session_state.get("wd_rate", wd_rate),
+            "total_income":     total_income,
+            "total_expense":    total_expense,
+            "yearly_savings":   net_saving,
+            "investable":       investable,
+            "total_debt":       total_debt,
+            "net_worth":        investable - total_debt,
             "inc_detail": {
-                "Pension": get_annual_safe("inc_sal"),
-                "Rental": get_annual_safe("inc_rent"),
+                "Pension":  get_annual_safe("inc_sal"),
+                "Rental":   get_annual_safe("inc_rent"),
                 "Dividend": get_annual_safe("inc_div"),
-                "Other": get_annual_safe("inc_other")
+                "Other":    get_annual_safe("inc_other"),
             },
             "exp_fixed_detail": {
-                "Loan": get_annual_safe("exp_loan"),
-                "Housing": get_annual_safe("exp_house"),
-                "Insurance": get_annual_safe("exp_ins"),
-                "Subscription": get_annual_safe("exp_sub"),
-                "Other Fixed": get_annual_safe("exp_fix_oth")
+                "Loan":       {"amount": get_annual_safe("exp_loan"),    "years_remaining": st.session_state.get("dur_exp_loan")},
+                "Housing":    {"amount": get_annual_safe("exp_house"),   "years_remaining": st.session_state.get("dur_exp_house")},
+                "Insurance":  {"amount": get_annual_safe("exp_ins"),     "years_remaining": st.session_state.get("dur_exp_ins")},
+                "Subscription":{"amount":get_annual_safe("exp_sub"),     "years_remaining": st.session_state.get("dur_exp_sub")},
+                "Other Fixed":{"amount": get_annual_safe("exp_fix_oth"), "years_remaining": st.session_state.get("dur_exp_fix_oth")},
             },
             "exp_var_detail": {
-                "Transport": get_annual_safe("exp_trans"),
-                "Food": get_annual_safe("exp_food"),
-                "Entertain": get_annual_safe("exp_ent"),
-                "Travel": get_annual_safe("exp_travel"),
-                "Health": get_annual_safe("exp_health"),
-                "Other Variable": get_annual_safe("exp_var_oth")
+                "Transport":      get_annual_safe("exp_trans"),
+                "Food":           get_annual_safe("exp_food"),
+                "Entertain":      get_annual_safe("exp_ent"),
+                "Travel":         get_annual_safe("exp_travel"),
+                "Health":         get_annual_safe("exp_health"),
+                "Other Variable": get_annual_safe("exp_var_oth"),
             },
-           "asset_detail": {
-                "Cash": get_num("cash_dep"),
-                "Thai Bond": get_num("bond"),
-                "Global Bond": get_num("gl_bond"),
-                "Thai Equity": get_num("stock"),
+            "asset_detail": {
+                "Cash":          get_num("cash_dep"),
+                "Thai Bond":     get_num("bond"),
+                "Global Bond":   get_num("gl_bond"),
+                "Thai Equity":   get_num("stock"),
                 "Global Equity": get_num("gl_stock"),
-                "PF&REIT": get_num("reit"),
-                "Global REIT": get_num("gl_reit"),
-                "Gold": get_num("gold_invest")
+                "PF&REIT":       get_num("reit"),
+                "Global REIT":   get_num("gl_reit"),
+                "Gold":          get_num("gold_invest"),
             },
             "debt_detail": {
-                "Home Loan": get_num("debt_home"),
-                "Car Loan": get_num("debt_car"),
-                "Credit Card": get_num("debt_cc"),
-                "Other Debt": get_num("debt_other")
-            }
-        })
+                "Home Loan":  {"amount": get_num("debt_home"),  "years_remaining": st.session_state.get("dur_debt_home")},
+                "Car Loan":   {"amount": get_num("debt_car"),   "years_remaining": st.session_state.get("dur_debt_car")},
+                "Credit Card":{"amount": get_num("debt_cc"),    "years_remaining": st.session_state.get("dur_debt_cc")},
+                "Other Debt": {"amount": get_num("debt_other"), "years_remaining": st.session_state.get("dur_debt_other")},
+            },
+        }
 
-        # 4. Generate the Files
-        st.session_state["export_data"] = export_data
+        st.session_state["export_data"]      = export_data
         st.session_state["export_csv_bytes"] = build_full_report_csv(export_data, res, alloc)
         st.session_state["export_pdf_bytes"] = build_pdf_bytes(export_data, res)
+        st.success("เตรียมไฟล์สำเร็จ! ✅")
 
-        st.success("เตรียมไฟล์สำเร็จ! Prepared Export Files ✅")
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button(
-            "📄 Download Full Report CSV",
+        st.download_button("📄 Download Full Report CSV",
             data=st.session_state.get("export_csv_bytes", b""),
-            file_name="full_retirement_report.csv",
-            mime="text/csv",
-            disabled=("export_csv_bytes" not in st.session_state),
-        )
+            file_name="full_retirement_report.csv", mime="text/csv",
+            disabled="export_csv_bytes" not in st.session_state)
     with c2:
-        st.download_button(
-            "📕 Download Full Report PDF",
-            data=st.session_state.get("export_pdf_bytes")if st.session_state.get("export_pdf_bytes") is not None else b"",
-            file_name="full_retirement_report.pdf",
-            mime="application/pdf",
-            disabled=("export_pdf_bytes" not in st.session_state),
-        )
-        
+        st.download_button("📕 Download Full Report PDF",
+            data=st.session_state.get("export_pdf_bytes") or b"",
+            file_name="full_retirement_report.pdf", mime="application/pdf",
+            disabled="export_pdf_bytes" not in st.session_state)
+
     st.button("⬅ Back", on_click=prev_step)
