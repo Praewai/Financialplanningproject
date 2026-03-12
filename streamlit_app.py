@@ -22,16 +22,30 @@ st.title("Post Retirement Financial Planner")
 # =========================================================
 @st.dialog("⚠️ Disclaimer (คำเตือน)")
 def show_disclaimer():
-    st.markdown("""
-    This website was created by Financial Engineering Students not Financial Planner nor Investment Advisor and we do not have access to any non public information.
-    We cannot guarantee that the simulation will be 100% correct.
-    This was created solely for financial planner to use as an assistance for rough estimation and not to be use as a replacement of one.
-    We are not regulated by any Financial Service Authority.
+  st.markdown("""
+  This website was created by Financial Engineering Students. We are not Financial Planners or Investment Advisors, and we do not have access to any non-public information.
 
-    เว็บไซต์นี้จัดทำขึ้นโดยนักศึกษาภาควิชาวิศวกรรมการเงิน (Financial Engineering) ไม่ใช่ผู้วางแผนการเงิน (Financial Planner) หรือที่ปรึกษาการลงทุน (Investment Advisor) และผู้จัดทำไม่ได้มีการเข้าถึงข้อมูลภายใน (Non-public information) ใดๆ ทั้งสิ้น
-    เราไม่สามารถรับรองได้ว่าผลจากการจำลอง (Simulation) จะถูกต้องแม่นยำ 100% เครื่องมือนี้ถูกสร้างขึ้นเพื่อใช้เป็นเครื่องช่วยคำนวณเบื้องต้นสำหรับผู้วางแผนการเงินเท่านั้น ไม่ควรนำไปใช้ทดแทนการวางแผนการเงินแบบเต็มรูปแบบ และเราไม่ได้อยู่ภายใต้การกำกับดูแลของหน่วยงานกำกับดูแลบริการทางการเงินใดๆ""")
-    if st.button("I understand (รับทราบ)"):
-        st.rerun()
+No Guarantee: We cannot guarantee that the simulation is 100% accurate. All calculations and projections are based on mathematical models and should be treated as estimates.
+
+Intended Purpose: This tool was created solely for financial planners to use as assistance for rough estimation and is not to be used as a replacement for professional financial planning.
+
+Non-Regulated: We are not regulated by any Financial Services Authority.
+
+Privacy: We do not store, collect, or monitor any personal data or financial information entered into this application. All data is processed in real-time and is cleared once the session ends. 
+        
+เว็บไซต์นี้จัดทำขึ้นโดยนักศึกษาภาควิชาวิศวกรรมการเงิน (Financial Engineering) ไม่ใช่ผู้วางแผนการเงิน (Financial Planner) หรือที่ปรึกษาการลงทุน (Investment Advisor) และผู้จัดทำไม่ได้มีการเข้าถึงข้อมูลภายใน (Non-public information) ใดๆ ทั้งสิ้น
+
+การรับรองผล: เราไม่สามารถรับรองได้ว่าผลจากการจำลอง (Simulation) จะถูกต้องแม่นยำ 100% ข้อมูลการคาดการณ์ทั้งหมดเป็นเพียงการประมาณการเชิงคณิตศาสตร์เท่านั้น
+
+วัตถุประสงค์: เครื่องมือนี้ถูกสร้างขึ้นเพื่อใช้เป็นเครื่องมือช่วยคำนวณเบื้องต้นสำหรับผู้วางแผนการเงินเท่านั้น ไม่ควรนำไปใช้ทดแทนการวางแผนการเงินแบบเต็มรูปแบบโดยผู้เชี่ยวชาญ
+
+การกำกับดูแล: ผู้จัดทำไม่ได้อยู่ภายใต้การกำกับดูแลของหน่วยงานกำกับดูแลบริการทางการเงินใดๆ
+
+นโยบายความเป็นส่วนตัว: เราไม่มีการจัดเก็บ บันทึก หรือเข้าถึงข้อมูลส่วนบุคคลและข้อมูลทางการเงินที่คุณกรอกเข้าสู่ระบบ ข้อมูลทั้งหมดจะถูกลบออกจากหน่วยความจำทันทีเมื่อเสร็จสิ้นการใช้งานหรือปิดหน้าเว็บไซต์""")
+  
+  if st.button("I accepted (ยอมรับ)"):
+    st.rerun()
+
 
 if "accepted_terms" not in st.session_state:
     show_disclaimer()
@@ -341,7 +355,15 @@ class RetirementSimulator:
         all_withdrawals = np.array(all_withdrawals, dtype=float)
         final_values    = all_balances[:, -1]
 
-        inh_rate = float(np.mean(final_values >= inheritance_goal)) if inheritance_goal > 0 else -1.0
+        # AFTER:
+        if inheritance_goal > 0:
+            surviving_mask = final_values > 0
+            if surviving_mask.sum() > 0:
+                inh_rate = float(np.mean(final_values[surviving_mask] >= inheritance_goal))
+            else:
+                inh_rate = 0.0
+        else:
+            inh_rate = -1.0
 
         surviving_finals = final_values[final_values > 0]
         median_surviving = float(np.median(surviving_finals)) if len(surviving_finals) > 0 else 0.0
@@ -609,7 +631,6 @@ def build_full_report_csv(export_data, res, alloc, years=30):
             if amt > 0: rows.append(["DEBT",item,fnum(amt),mo_str])
         elif info > 0: rows.append(["DEBT",item,fnum(info),"Permanent"])
     rows.append(["DEBT_TOTAL","TOTAL DEBT",fnum(export_data.get("total_debt",0)),""])
-    rows.append(["NET_WORTH","NET WORTH",fnum(export_data.get("net_worth",0)),""])
     rows.append([])
 
     sim_strat = export_data.get("sim_strat","-")
@@ -688,7 +709,7 @@ def build_pdf_bytes(data, res):
         amt = info.get("amount",0) if isinstance(info,dict) else info
         mo  = info.get("months_remaining",None) if isinstance(info,dict) else None
         if amt>0:
-            mo_str = f" (ผ่อนอีก {mo} เดือน)" if mo else ""
+            mo_str = f" (pay for {mo} months)" if mo else ""
             c.drawString(60,yc,f"- {k}: {amt:,.2f} THB{mo_str}"); yc-=22; has_debt=True
     if not has_debt: c.drawString(60,yc,"- No outstanding debt"); yc-=22
     yd=yc-15; c.setFont(FONT_BOLD,S_B); c.drawString(60,yd,f"Total Liabilities: {data.get('total_debt',0):,.2f} THB")
@@ -715,7 +736,7 @@ def build_pdf_bytes(data, res):
     c.drawString(320,y,"Total Expenses:"); c.drawRightString(535,y,f"{total_exp:,.0f} THB")
     y-=60; c.setFont(FONT_BOLD,S_S); c.drawString(50,y,"Financial Health Summary")
     y-=30; c.setFont(FONT_REG,S_B)
-    c.drawString(60,y,f"Net Worth: {data.get('net_worth',0):,.2f} THB")
+    c.drawString(60,y,f"Investable Assets: {data.get('investable',0):,.2f} THB")
     if net_flow<0: c.setFillColorRGB(0.8,0,0)
     c.drawRightString(535,y,f"Net Cashflow/Year: {net_flow:,.2f} THB"); y-=22
     c.drawRightString(535,y,f"Net Cashflow/Month: {net_flow/12:,.2f} THB")
@@ -754,7 +775,7 @@ def build_pdf_bytes(data, res):
         sr=res.get("survival_rate",0)*100; me=res["median_balance"][-1]; ihs=res.get("inheritance_success_rate",0)*100
         c.drawString(60,ys,f"Survival Rate: {sr:.1f}%"); c.drawString(300,ys,f"Median End Balance: {me:,.2f} THB"); ys-=20
         c.drawString(60,ys,f"Inheritance Success: {ihs:.1f}%"); c.drawString(300,ys,f"Strategy: {data.get('sim_strat')}"); ys-=20
-        c.drawString(60,ys,f"WD Rate: {data.get('wd_rate',0)*100:.2f}%"); c.drawString(300,ys,f"Inflation: {data.get('inflation',0.03)*100:.2f}%")
+        c.drawString(60,ys,f"Withdrawal Rate: {data.get('wd_rate',0)*100:.2f}%"); c.drawString(300,ys,f"Inflation: {data.get('inflation',0.03)*100:.2f}%")
 
     # BUG FIX 6: always save and return — previously the return was INSIDE
     # the "if res is not None" block, so calling without a simulation result
@@ -859,6 +880,11 @@ if st.session_state["current_step"] == 0:
     st.session_state["start_port"] = investable_assets
 
     # ---- DEBT SECTION ----
+    # Helper: total amount over duration (monthly × months) or annual if permanent
+    def _lifetime(ann, mo, mrem):
+        if mrem is not None:
+            return mo * mrem
+        return ann
     st.subheader("C. หนี้สิน (Debt)")
     st.caption("💡 กด ⏱ เพื่อระบุว่าผ่อนอีกกี่เดือน/ปี — ระบบจะหยุดนับรายจ่ายนี้เมื่อครบกำหนด")
 
@@ -918,7 +944,14 @@ if st.session_state["current_step"] == 0:
                 st.dataframe(fmt_df, use_container_width=True)
 
     total_debt_balance = debt_home_ann + debt_car_ann + debt_cc_ann + debt_other_ann
-    st.metric("💳 หนี้สินรวมทั้งหมด (ยอดคงค้าง)", f"{total_debt_balance:,.0f}")
+    total_debt_lifetime = (
+        _lifetime(debt_home_ann,  debt_home_mo,  debt_home_mrem)  +
+        _lifetime(debt_car_ann,   debt_car_mo,   debt_car_mrem)   +
+        _lifetime(debt_cc_ann,    debt_cc_mo,    debt_cc_mrem)    +
+        _lifetime(debt_other_ann, debt_other_mo, debt_other_mrem)
+    )
+    st.metric("💳 ค่างวดรวมต่อปี", f"{total_debt_balance:,.0f} บาท")
+    st.info(f"💳 รวมภาระหนี้ตลอดช่วงเวลา: **{total_debt_lifetime:,.0f} บาท**")
 
     st.session_state["timed_debt_items"] = [
         {"name":"Home Loan",   "annual_amount":debt_home_ann,  "months_remaining":debt_home_mrem},
@@ -938,6 +971,13 @@ if st.session_state["current_step"] == 0:
         inc_other_ann,   inc_other_mo,   inc_other_mrem   = timed_expense_input("รายได้อื่นๆ (Other)", "inc_other",   show_timer=True, timer_label="ได้รับอีก")
         total_income = inc_pension_ann + inc_rent_ann + inc_div_ann + inc_other_ann
 
+        total_income_lifetime = (
+            _lifetime(inc_pension_ann, inc_pension_mo, inc_pension_mrem) +
+            _lifetime(inc_rent_ann,    inc_rent_mo,    inc_rent_mrem)    +
+            _lifetime(inc_div_ann,     inc_div_mo,     inc_div_mrem)     +
+            _lifetime(inc_other_ann,   inc_other_mo,   inc_other_mrem)
+        )
+
     # BUG FIX 8: store timed income items so expiring income is removed from schedule
     st.session_state["timed_income_items"] = [
         {"name":"Pension",  "annual_amount":inc_pension_ann, "months_remaining":inc_pension_mrem},
@@ -946,7 +986,7 @@ if st.session_state["current_step"] == 0:
         {"name":"Other",    "annual_amount":inc_other_ann,   "months_remaining":inc_other_mrem},
     ]
 
-    st.success(f"💰 **รวมรายได้:** {total_income:,.0f} บาท/ปี (เฉลี่ย {total_income/12:,.0f} บาท/เดือน)")
+    st.success(f"💰 **รวมรายได้:** {total_income:,.0f} บาท/ปี (เฉลี่ย {total_income/12:,.0f} บาท/เดือน) | รวมตลอดช่วงเวลา: **{total_income_lifetime:,.0f} บาท**")
 
     with st.expander("💸 2. รายจ่าย (Expenses)"):
         st.markdown("🔹 รายจ่ายคงที่ (Fixed)")
@@ -958,7 +998,13 @@ if st.session_state["current_step"] == 0:
         exp_fix_ann,   exp_fix_mo,   exp_fix_mrem   = timed_expense_input("อื่นๆ (Other Fixed)",    "exp_fix_oth", show_timer=True)
 
         total_fixed = exp_house_ann+exp_ins_ann+exp_sub_ann+exp_fix_ann
-        st.info(f"รวม Fixed: {total_fixed:,.0f} บาท/ปี")
+        total_fixed_lifetime = (
+            _lifetime(exp_house_ann, exp_house_mo, exp_house_mrem) +
+            _lifetime(exp_ins_ann,   exp_ins_mo,   exp_ins_mrem)   +
+            _lifetime(exp_sub_ann,   exp_sub_mo,   exp_sub_mrem)   +
+            _lifetime(exp_fix_ann,   exp_fix_mo,   exp_fix_mrem)
+        )
+        st.info(f"รวม Fixed: {total_fixed:,.0f} บาท/ปี | รวมตลอดช่วงเวลา: **{total_fixed_lifetime:,.0f} บาท**")
 
         st.markdown("---")
         st.markdown("🔸 รายจ่ายผันแปร (Non-Fixed)")
@@ -970,10 +1016,19 @@ if st.session_state["current_step"] == 0:
         exp_var_ann,    exp_var_mo,    exp_var_mrem    = timed_expense_input("อื่นๆ (Other Variable)",  "exp_var_oth", show_timer=True)
 
         total_variable = exp_trans_ann+exp_food_ann+exp_ent_ann+exp_travel_ann+exp_health_ann+exp_var_ann
-        st.info(f"รวม Variable: {total_variable:,.0f} บาท/ปี")
+        total_variable_lifetime = (
+            _lifetime(exp_trans_ann,  exp_trans_mo,  exp_trans_mrem)  +
+            _lifetime(exp_food_ann,   exp_food_mo,   exp_food_mrem)   +
+            _lifetime(exp_ent_ann,    exp_ent_mo,    exp_ent_mrem)    +
+            _lifetime(exp_travel_ann, exp_travel_mo, exp_travel_mrem) +
+            _lifetime(exp_health_ann, exp_health_mo, exp_health_mrem) +
+            _lifetime(exp_var_ann,    exp_var_mo,    exp_var_mrem)
+        )
+        st.info(f"รวม Variable: {total_variable:,.0f} บาท/ปี | รวมตลอดช่วงเวลา: **{total_variable_lifetime:,.0f} บาท**")
         total_expense = total_fixed + total_variable
+        total_expense_lifetime = total_fixed_lifetime + total_variable_lifetime
 
-    st.error(f"📉 **รวมรายจ่าย:** {total_expense:,.0f} บาท/ปี (เฉลี่ย {total_expense/12:,.0f} บาท/เดือน)")
+    st.error(f"📉 **รวมรายจ่าย:** {total_expense:,.0f} บาท/ปี (เฉลี่ย {total_expense/12:,.0f} บาท/เดือน) | รวมตลอดช่วงเวลา: **{total_expense_lifetime:,.0f} บาท**")
 
     st.session_state["timed_expense_items"] = [
         {"name":"Housing",     "annual_amount":exp_house_ann, "months_remaining":exp_house_mrem},
@@ -987,14 +1042,12 @@ if st.session_state["current_step"] == 0:
     st.session_state["v_net_cashflow"]  = total_income - total_expense
 
     yearly_savings = total_income - total_expense
-    net_worth = investable_assets - total_debt_balance
 
     st.markdown("### 📊 สรุปสถานะการเงิน (หลังเกษียณ)")
-    m1,m2,m3,m4=st.columns(4)
-    m1.metric("มูลค่าสุทธิ (Net Worth)",        f"{net_worth:,.0f}")
-    m2.metric("เงินลงทุนได้ (Investable)",       f"{investable_assets:,.0f}")
-    m3.metric("เงินคงเหลือ/ปี",                  f"{yearly_savings:,.0f}")
-    m4.metric("หนี้สินรวม",                       f"{total_debt_balance:,.0f}")
+    m1,m2,m3=st.columns(3)
+    m1.metric("เงินลงทุนได้ (Investable)",       f"{investable_assets:,.0f}")
+    m2.metric("เงินคงเหลือ/ปี",                  f"{yearly_savings:,.0f}")
+    m3.metric("หนี้สินรวม",                       f"{total_debt_balance:,.0f}")
     if yearly_savings < 0:
         st.warning(f"⚠️ รายจ่ายมากกว่ารายได้ {abs(yearly_savings):,.0f} บาท/ปี")
 
@@ -1027,46 +1080,16 @@ elif st.session_state["current_step"] == 1:
     st.header("🧩 2. แบบประเมินความเสี่ยง")
 
     questions_data = [
-        {"q":"Q1: ปัจจุบันคุณกำลังอยู่ในช่วงชีวิตใด","choices":[
-            {"label":"อายุยังไม่เกิน 30 ปี เริ่มต้นทำงาน","score":3},
-            {"label":"อายุเกิน 30 แต่ไม่เกิน 55 ปี อยู่ในวัยทำงาน","score":2},
-            {"label":"อายุเกิน 55 ปี ใกล้เกษียณอยากพักผ่อน","score":1}]},
-        {"q":"Q2: เมื่อพูดถึง 'ความผันผวน' คุณนึกถึงอะไรเป็นอันดับแรก","choices":[
-            {"label":"นี่แหละโอกาสทอง ขึ้นก็ขาย ลงก็ซื้อ","score":3},
-            {"label":"ที่ไหนมีความผันผวน ที่นั่นมีความไม่แน่นอน","score":2},
-            {"label":"แย่แล้วถ้าราคาตก ก็ขาดทุนสิ!!","score":1}]},
-        {"q":"Q3: สไตล์การลงทุนที่ผ่านมาของคุณเป็นแบบไหน","choices":[
-            {"label":"กล้าได้กล้าเสีย ยอมตัดขาดทุน สร้างกำไรสูงๆ","score":3},
-            {"label":"ช้าแต่ชัวร์ ได้น้อยดีกว่าไม่ได้ แต่ไม่อยากขาดทุน","score":1},
-            {"label":"แล้วแต่จังหวะ บางทีก็เสี่ยงบ้าง มีกำไรพอประมาณ","score":2}]},
-        {"q":"Q4: หากลงทุนแล้วขาดทุน อะไรคือสาเหตุในความคิดของคุณ","choices":[
-            {"label":"การตัดสินใจที่ผิดพลาดของตัวเรา","score":3},
-            {"label":"เพราะความไม่แน่นอนของตลาดและภาวะการลงทุน","score":1},
-            {"label":"ทั้งตัวเราแล้วก็ภาวะการลงทุน","score":2}]},
-        {"q":"Q5: ในอีก 1 ปี คุณอยากเห็นอะไรจากเงินลงทุน","choices":[
-            {"label":"ผลตอบแทนแน่นอน 5%","score":1},
-            {"label":"หวังกำไรถึง 10% แต่ยอมขาดทุนได้สัก 5%","score":2},
-            {"label":"หวังกำไรถึง 20% แต่ยอมขาดทุนได้สัก 10%","score":3}]},
-        {"q":"Q6: ถ้าถูกล๊อตเตอรี่ได้เงิน 500,000 บาท คุณจะนำไปลงทุนอะไร","choices":[
-            {"label":"ฝากประจำหรือพันธบัตรรัฐบาล","score":1},
-            {"label":"แบ่งครึ่งหนึ่งไปซื้อหุ้น อีกครึ่งหนึ่งไปซื้อพันธบัตร","score":2},
-            {"label":"ซื้อหุ้นไปเลย","score":3}]},
-        {"q":"Q7: คุณโดนเลิกจ้างกะทันหัน ก่อนที่จะจองโปรแกรมท่องเที่ยวต่างประเทศ คุณจะตัดสินใจอย่างไร","choices":[
-            {"label":"ยกเลิกโปรแกรมท่องเที่ยว จนกว่าจะหางานใหม่ได้","score":1},
-            {"label":"เปลี่ยนแผนท่องเที่ยว ไปแบบประหยัดแทน","score":2},
-            {"label":"จองและไปเที่ยวตามเดิม กลับมาค่อยว่ากัน","score":3}]},
-        {"q":"Q8: ในเกมโชว์ คุณจะเลือกอย่างไร","choices":[
-            {"label":"หยุดเล่นแล้วรับเงิน 30,000 บาท","score":1},
-            {"label":"เล่นต่อ 2 ตัวเลือก: ถูก=60,000 ผิด=0","score":2},
-            {"label":"เล่นต่อ 4 ตัวเลือก: ถูก=120,000 ผิด=0","score":3}]},
-        {"q":"Q9: คุณจะร่วมลงทุนซื้อที่ดินก็ต่อเมื่อโอกาสที่ราคาจะเพิ่มขึ้นเป็นแบบใด","choices":[
-            {"label":"ถึงจะเป็นไปได้น้อย ก็อยากลงทุนด้วย","score":3},
-            {"label":"ต้องมีความเป็นไปได้ปานกลาง","score":2},
-            {"label":"ต้องเป็นไปได้มากๆ หน่อย","score":1}]},
-        {"q":"Q10: คุณจะเลือกรับผลตอบแทนแบบใด","choices":[
-            {"label":"เงินเดือนแน่นอนเป็นหลัก ค่านายหน้านิดหน่อย","score":1},
-            {"label":"สมดุล เงินเดือนครึ่งหนึ่ง ค่านายหน้าอีกครึ่งหนึ่ง","score":2},
-            {"label":"เน้นค่านายหน้าตามผลงาน เงินเดือนเล็กน้อย","score":3}]},
+        {"q": "Q1: ปัจจุบันคุณกำลังอยู่ในช่วงชีวิตใด", "choices": [{"label": "อายุยังไม่เกิน 30 ปี เริ่มต้นทำงาน เก็บเงินเก็บทอง", "score": 3}, {"label": "อายุเกิน 30 แต่ไม่เกิน 55 ปี อยู่ในวัยทำงาน มีเงินเก็บเงินก้อน", "score": 2}, {"label": "อายุเกิน 55 ปี ใกล้เกษียณอยากพักผ่อน", "score": 1}]},
+        {"q": "Q2: ในเรื่องการลงทุนเมื่อพูดถึง “ความผันผวน” คุณนึกถึงอะไรเป็นอันดับแรก", "choices": [{"label": "นี่แหละโอกาสทอง ขึ้นก็ขาย ลงก็ซื้อ ได้กำไรตั้งหลายรอบ", "score": 3}, {"label": "ที่ไหนมีความผันผวน ที่นั่นมีความไม่แน่นอน", "score": 2}, {"label": "แย่แล้วถ้าราคาตก ก็ขาดทุนสิ!!", "score": 1}]},
+        {"q": "Q3: สไตล์การลงทุนที่ผ่านมาของคุณเป็นแบบไหน", "choices": [{"label": "กล้าได้กล้าเสีย ถึงเวลาต้องยอมตัดขาดทุน แล้วไปลุยใหม่ สร้างกำไรสูงๆ", "score": 3}, {"label": "ช้าแต่ชัวร์ ได้น้อยดีกว่าไม่ได้ แต่ไม่อยากขาดทุน", "score": 1}, {"label": "แล้วแต่จังหวะ แล้วแต่โอกาส บางทีก็เสี่ยงบ้าง มีกำไรพอประมาณ", "score": 2}]},
+        {"q": "Q4: หากลงทุนแล้วขาดทุน อะไรคือสาเหตุในความคิดของคุณ", "choices": [{"label": "การตัดสินใจที่ผิดพลาดของตัวเรา", "score": 3}, {"label": "เป็นเพราะความไม่แน่นอนของตลาดและภาวะการลงทุน", "score": 1}, {"label": "ก็ทั้งตัวเราแล้วก็ภาวะการลงทุนนั่นแหละ", "score": 2}]},
+        {"q": "Q5: ลองหลับตาแล้วมองไปข้างหน้าในอีก 1 ปี คุณอยากเห็นอะไรจากเงินลงทุน", "choices": [{"label": "ผลตอบแทนแน่นอน 5%", "score": 1}, {"label": "หวังกำไรถึง 10% แต่ถ้าโชคไม่ดีขาดทุนก็ยอมได้สัก 5%", "score": 2}, {"label": "หวังกำไรถึง 20% แต่ถ้าโชคไม่ดีขาดทุนก็ยอมได้สัก 10%", "score": 3}]},
+        {"q": "Q6: ถ้าคุณโชคดีถูกล๊อตเตอรี่ได้เงินรางวัล 500,000 บาท คุณจะนำเงินไปลงทุนอะไร", "choices": [{"label": "ฝากประจำหรือพันธบัตรรัฐบาล เงินต้นอยู่ครบ ผลตอบแทนน้อยหน่อยแต่แน่นอน", "score": 1}, {"label": "แบ่งครึ่งหนึ่งไปซื้อหุ้นสามัญ อีกครึ่งหนึ่งไปซื้อพันธบัตรรัฐบาล", "score": 2}, {"label": "โชคดีแบบนี้ไม่ต้องกลัว ซื้อหุ้นไปเลย", "score": 3}]},
+        {"q": "Q7: การได้ไปท่องเที่ยวต่างประเทศแบบหรูหรา เป็นความใฝ่ฝันของคุณที่อุตส่าห์เก็บหอมรอมริบมานานหลายปี ทว่าก่อนจองโปรแกรมท่องเที่ยว คุณโดนเลิกจ้างกะทันหันจากนโยบายลดจำนวนพนักงานของบริษัท คุณจะตัดสินใจอย่างไร", "choices": [{"label": "ยกเลิกโปรแกรมท่องเที่ยว จนกว่าจะหางานใหม่ได้", "score": 1}, {"label": "เปลี่ยนแผนท่องเที่ยว ไปแบบประหยัดแทน", "score": 2}, {"label": "จองโปรแกรมและไปเที่ยวตามเดิม กลับมาค่อยว่ากัน", "score": 3}]},
+        {"q": "Q8: คุณได้ร่วมรายการเกมโชว์ เล่นได้ถึงรอบลึกๆ และมาถึงทางเลือกที่ว่าจะเล่นต่อหรือหยุดเล่น ด้วยเงื่อนไขต่างๆ คุณจะเลือกอย่างไร", "choices": [{"label": "หยุดเล่นแล้วรับเงินรางวัล 30,000 บาท", "score": 1}, {"label": "เล่นต่อกับคำถาม 2 ตัวเลือก ตอบถูกรับเงิน 60,000 บาท ตอบผิดไม่ได้อะไรเลย", "score": 2}, {"label": "เล่นต่อกับคำถาม 4 ตัวเลือก ตอบถูกรับเงิน 120,000 บาท ตอบผิดไม่ได้อะไรเลย", "score": 3}]},
+        {"q": "Q9: เพื่อนของคุณที่เก่งด้านการค้าที่ดิน มาชวนลงทุนซื้อที่ดินด้วยกัน และคาดว่าราคามีโอกาสจะเพิ่มจากตารางวาละ 20,000 บาท เป็น 40,000 บาท ในอีก 1 ปีข้างหน้า แต่ก็มีโอกาสที่ราคาจะไม่เพิ่มขึ้นอยู่เหมือนกัน คุณจะร่วมลงทุนก็ต่อเมื่อโอกาสที่ราคาที่ดินจะเพิ่มขึ้นเป็นแบบใด ", "choices": [{"label": "ถึงจะเป็นไปได้น้อย ก็อยากลงทุนด้วย", "score": 3}, {"label": "ต้องมีความเป็นไปได้ปานกลาง ถึงจะลงทุนด้วย", "score": 2}, {"label": "ต้องเป็นไปได้มากๆ หน่อย ถึงจะลงทุนด้วย", "score": 1}]},
+        {"q": "Q10: เจ้าของธุรกิจแห่งหนึ่งชวนคุณไปทำงานด้วย โดยมีเงื่อนไขระหว่าง ให้รับผลตอบแทนเป็นเงินเดือนที่แน่นอน หรือรับเงินเดือนน้อยหน่อยแต่มีค่านายหน้าตามผลงานยอดขายที่ทำได้ คุณจะเลือกรับผลตอบแทนแบบใด", "choices": [{"label": "เอารายได้แน่นอนดีกว่า เลือกรับเงินเดือนเป็นหลัก ค่านายหน้านิดหน่อย", "score": 1}, {"label": "เลือกแบบสมดุล รับเงินเดือนครึ่งหนึ่ง ค่านายหน้าอีกครึ่งหนึ่ง", "score": 2}, {"label": "เลือกรับรายได้ตามผลงาน เน้นค่านายหน้าเป็นหลัก เงินเดือนเล็กน้อย", "score": 3}]}
     ]
 
     def persistent_radio(key_suffix,options,label):
@@ -1091,16 +1114,16 @@ elif st.session_state["current_step"] == 1:
 
         if "1" in profile:
             advice="เน้นรักษาเงินต้น"
-            data={"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["100%","0%","0%"]}
+            data={"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["85%","10%","5%"]}
         elif "2" in profile:
             advice="ยอมรับความเสี่ยงได้บ้าง"
-            data={"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["80%","10%","10%"]}
+            data={"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["80%","15%","5%"]}
         elif "3" in profile:
             advice="สมดุล 60/40"
-            data={"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["60%","25%","25%"]}
+            data={"สินทรัพย์":["เงินฝาก/ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["60%","30%","10%"]}
         elif "4" in profile:
             advice="เน้นสร้างความมั่งคั่ง"
-            data={"สินทรัพย์":["ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["50%","30%","20%"]}
+            data={"สินทรัพย์":["ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["50%","40%","10%"]}
         else:
             advice="เน้นการเติบโตสูงสุด"
             data={"สินทรัพย์":["ตราสารหนี้","หุ้น","ทางเลือก"],"สัดส่วน":["40%","40%","20%"]}
@@ -1155,12 +1178,12 @@ elif st.session_state["current_step"] == 2:
     c1,c2=st.columns(2)
     with c1:
         st.subheader("Thai Assets")
-        val_gov_bond =money_input("Government Bond (THB) - THAT Index",      curr_bond,    "p3_gov_bond")
+        val_gov_bond =money_input("Bond (THB) - THAT Index",      curr_bond,    "p3_gov_bond")
         val_seti     =money_input("Thai Stock (THB) - SET Index",            curr_stock,   "p3_seti")
         val_reit     =money_input("PF&REIT (THB) - SETPREIT Index",          curr_reit,    "p3_reit")
     with c2:
         st.subheader("Global Assets")
-        val_msci_gov  =money_input("Global Gov Bond (THB) - LEGATRUU",       curr_gl_bond, "p3_msci_gov")
+        val_msci_gov  =money_input("Global Bond (THB) - LEGATRUU",       curr_gl_bond, "p3_msci_gov")
         val_msci_stock=money_input("Global Stock (THB) - MXWD Index",        curr_gl_stock,"p3_msci_stock")
         val_msci_reits=money_input("Global REITs (THB) - NDUWREIT Index",    curr_gl_reit, "p3_mscireits")
         val_gold      =money_input("Gold (THB) - XAUTHB",                    curr_gold,    "p3_gold")
@@ -1172,11 +1195,11 @@ elif st.session_state["current_step"] == 2:
         st.markdown(f"### 💰 Total Portfolio: **{total_port_value:,.0f}** THB")
         alloc={
             "pct_deposit":       val_deposit    /total_port_value,
-            "pct_gov_bond":      val_gov_bond   /total_port_value,
+            "pct_bond":      val_gov_bond   /total_port_value,
             "pct_seti":          val_seti       /total_port_value,
             "pct_gold":          val_gold       /total_port_value,
             "pct_REIT":          val_reit       /total_port_value,
-            "pct_msci_gov_bond": val_msci_gov   /total_port_value,
+            "pct_msci_bond": val_msci_gov   /total_port_value,
             "pct_msci_stock":    val_msci_stock /total_port_value,
             "pct_msci_reit":     val_msci_reits /total_port_value,
         }
@@ -1221,19 +1244,19 @@ elif st.session_state["current_step"] == 2:
         if "ระดับ 1" in profile or (score <= 13):
             advice = "เน้นรักษาเงินต้น"
             alloc_data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้น", "สินทรัพย์ทางเลือก"],
-                          "สัดส่วนแนะนำ": ["100%", "0%", "0%"]}
+                          "สัดส่วนแนะนำ": ["85%", "10%", "5%"]}
         elif "ระดับ 2" in profile or (score <= 17):
             advice = "ยอมรับความเสี่ยงได้บ้าง"
             alloc_data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้น", "สินทรัพย์ทางเลือก"],
-                          "สัดส่วนแนะนำ": ["80%", "10%", "10%"]}
+                          "สัดส่วนแนะนำ": ["80%", "15%", "10%"]}
         elif "ระดับ 3" in profile or (score <= 21):
             advice = "สมดุล 60/40"
             alloc_data = {"สินทรัพย์": ["เงินฝาก/ตราสารหนี้", "หุ้น", "สินทรัพย์ทางเลือก"],
-                          "สัดส่วนแนะนำ": ["60%", "25%", "25%"]}
+                          "สัดส่วนแนะนำ": ["60%", "30%", "10%"]}
         elif "ระดับ 4" in profile or (score <= 25):
             advice = "เน้นสร้างความมั่งคั่ง"
             alloc_data = {"สินทรัพย์": ["ตราสารหนี้", "หุ้น", "สินทรัพย์ทางเลือก"],
-                          "สัดส่วนแนะนำ": ["50%", "30%", "20%"]}
+                          "สัดส่วนแนะนำ": ["50%", "40%", "10%"]}
         else:
             advice = "เน้นการเติบโตสูงสุด"
             alloc_data = {"สินทรัพย์": ["ตราสารหนี้", "หุ้น", "สินทรัพย์ทางเลือก"],
@@ -1277,7 +1300,7 @@ elif st.session_state["current_step"] == 3:
     start_port  = st.session_state.get("start_port",1_000_000.0)
     inflation   = st.session_state.get("inflation",0.03)
     retire_age  = st.session_state.get("retire_age",60)
-    inheritance = st.session_state.get("inheritance_goal",0.0)
+    inheritance = float(st.session_state.get("v_inheritance_goal") or st.session_state.get("inheritance_goal") or 0.0)
 
     timed_debt_items    = st.session_state.get("timed_debt_items",[])
     timed_expense_items = st.session_state.get("timed_expense_items",[])
@@ -1326,7 +1349,7 @@ elif st.session_state["current_step"] == 3:
 
     # ---- Data source ----
     st.markdown("### 📂 Data Assumptions")
-    data_mode=st.radio("Choose Source:",["Use Default Assumptions","Upload Bloomberg Files"],horizontal=True)
+    data_mode=st.radio("Choose Source:",["Use Default Data","Upload Bloomberg Files"],horizontal=True)
     custom_mean=None; custom_cov=None
 
     if data_mode=="Upload Bloomberg Files":
@@ -1335,7 +1358,7 @@ elif st.session_state["current_step"] == 3:
             st.markdown("1 ...")
         uploaded_files=st.file_uploader("Upload Excel/CSV files here:",type=["csv","xlsx","xls"],accept_multiple_files=True)
         sys_map={"Select Option...":"ignore","🔴 USD/THB Exchange Rate":"rate_usd_thb",
-                 "-----------------------":"ignore","Thai Government Bond":"pct_gov_bond",
+                 "-----------------------":"ignore","Thai Bond":"pct_gov_bond",
                  "Thai Equity (SET)":"pct_seti","Thai REITs":"pct_REIT",
                  "Global Stocks (MSCI)":"pct_msci_stock","Global Bond":"pct_msci_gov_bond",
                  "Global REITs":"pct_msci_reit","Gold":"pct_gold"}
@@ -1389,8 +1412,8 @@ elif st.session_state["current_step"] == 3:
     if data_mode=="Upload Bloomberg Files" and "custom_mean" in st.session_state:
         custom_mean=st.session_state["custom_mean"]; custom_cov=st.session_state["custom_cov"]
 
-    if data_mode=="Use Default Assumptions":
-        st.info("💡 Default data comes from from the Bloomberg, from 28/2/1990 to 28/11/2025 in monthly ")
+    if data_mode == "Use Default Data":
+        st.info("💡 Default data is provided by Bloomberg from 28/2/1990 to 28/11/2025 in monthly ")
 
     # ---- RUN SIMULATION ----
     if st.button("🚀 Run Simulation",type="primary"):
