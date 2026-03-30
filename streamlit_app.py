@@ -682,14 +682,48 @@ def build_pdf_bytes(data, res):
     c.showPage()
 
     # ---- Disclaimer page ----
-    c.setFont(FONT_BOLD, S_S); c.drawCentredString(width/2, height-1*inch, "Disclaimer / Warning")
-    c.setFont(FONT_REG, S_B)
-    for i, line in enumerate([
-        "This tool was created by Financial Engineering Students, not a regulated financial advisor.",
-        "Results are simulations only and cannot guarantee future outcomes.",
-        "Use this as rough estimation assistance only."
-    ]):
-        c.drawCentredString(width/2, height-1.5*inch - i*20, line)
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
+
+    # 1. สร้าง Style สำหรับ Disclaimer
+    styles = getSampleStyleSheet()
+    style_disclaimer = ParagraphStyle(
+        'DisclaimerStyle',
+        parent=styles['Normal'],
+        fontName=FONT_REG,
+        fontSize=11,
+        leading=16,          # ระยะห่างระหว่างบรรทัด
+        alignment=TA_LEFT,   # หรือใช้ TA_JUSTIFY เพื่อให้ขอบซ้ายขวาตรงกัน
+        spaceAfter=12        # ระยะห่างหลังจบย่อหน้า
+    )
+    style_title = styles['Heading2']
+    style_title.alignment = 1 # Center alignment
+
+    # 2. หัวข้อ
+    title = Paragraph("<b>Disclaimer / Warning</b>", style_title)
+    w, h = title.wrap(width - 2*inch, height) # กำหนดความกว้างที่จะให้แสดงผล
+    title.drawOn(c, 1*inch, height - 1.5*inch)
+
+    # 3. เนื้อหา (ใช้ <br/> สำหรับขึ้นบรรทัดใหม่ภายในย่อหน้า)
+    text_content = """
+    This website was created by <b>Financial Engineering Students</b>. We are not Financial Planners or Investment Advisors, and we do not have access to any non-public information.<br/><br/>
+    
+    <b>No Guarantee:</b> We cannot guarantee that the simulation is 100% accurate. All calculations and projections are based on mathematical models and should be treated as estimates.<br/><br/>
+    
+    <b>Intended Purpose:</b> This tool was created solely for financial planners to use as assistance for rough estimation and is not to be used as a replacement for professional financial planning.<br/><br/>
+    
+    <b>Non-Regulated:</b> We are not regulated by any Financial Services Authority.<br/><br/>
+    
+    <b>Privacy:</b> We do not store, collect, or monitor any personal data or financial information entered into this application. All data is processed in real-time and is cleared once the session ends.
+    """
+
+    p = Paragraph(text_content, style_disclaimer)
+    # wrap(ความกว้างที่ยอมให้เขียน, ความสูง)
+    w, h = p.wrap(width - 2*inch, height - 2*inch) 
+    # drawOn(canvas, x, y) -> เริ่มเขียนที่ x=1นิ้ว, y=ตำแหน่งหัวข้อลบด้วยความสูงเนื้อหา
+    p.drawOn(c, 1*inch, height - 2*inch - h)
+
     c.showPage()
 
     # ---- Table of Contents ----
@@ -778,18 +812,20 @@ def build_pdf_bytes(data, res):
         lbs  = [ASSET_LABELS.get(k, k) for k, v in alloc_weights.items() if v > 0.001]
         vals = [v for k, v in alloc_weights.items() if v > 0.001]
         if vals:
-            fig_pie, ax_pie = plt.subplots(figsize=(4, 4),dpi=200)
+            fig_pie, ax_pie = plt.subplots(figsize=(4, 4),dpi =150)
+            fig_pie.patch.set_facecolor('white')
             wedges, texts, autotexts = ax_pie.pie(
                 vals, labels=None, autopct='%1.1f%%', startangle=140,
                 pctdistance=0.75
             )
+            ax_pie.axis('equal')
             ax_pie.legend(wedges, lbs, loc="lower center",
-                          bbox_to_anchor=(0.5, -0.25), fontsize=7, ncol=2)
+                          bbox_to_anchor=(0.5, -0.1), fontsize=10, ncol=2)
             plt.tight_layout()
             buf_pie = io.BytesIO()
-            plt.savefig(buf_pie, format='png',dpi=200, transparent=True, bbox_inches='tight')
+            plt.savefig(buf_pie, format='png',dpi =180,facecolor='white', bbox_inches='tight')
             plt.close(fig_pie)
-            c.drawImage(ImageReader(buf_pie), 30, yp-220, width=220, height=220)
+            c.drawImage(ImageReader(buf_pie), 20, yp-220, width=260, height=260)
 
     yal = yp-50; c.setFont(FONT_BOLD, S_L); c.drawString(280, yal, "[Portfolio Allocation]")
     c.setFont(FONT_REG, S_B)
