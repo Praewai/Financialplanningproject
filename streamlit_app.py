@@ -674,112 +674,208 @@ def build_pdf_bytes(data, res):
     FONT_REG="Helvetica"; FONT_BOLD="Helvetica-Bold"
     S_T=16; S_S=12; S_L=10; S_B=10
 
-    c.setFont(FONT_BOLD,25)
+    # ---- Cover page ----
+    c.setFont(FONT_BOLD, 25)
     c.drawCentredString(width/2, height/2+50, "Retirement Financial Planning Report")
-    c.setFont(FONT_REG,S_S)
-    c.drawString(1*inch,1.5*inch,f"Customer: {data.get('name')}")
+    c.setFont(FONT_REG, S_S)
+    c.drawString(1*inch, 1.5*inch, f"Customer: {data.get('name')}")
     c.showPage()
 
-    c.setFont(FONT_BOLD,S_S); c.drawCentredString(width/2,height-1*inch,"Disclaimer / Warning")
-    c.setFont(FONT_REG,S_B)
-    for i,line in enumerate(["This tool was created by Financial Engineering Students, not a regulated financial advisor.",
-                              "Results are simulations only and cannot guarantee future outcomes.",
-                              "Use this as rough estimation assistance only."]):
+    # ---- Disclaimer page ----
+    c.setFont(FONT_BOLD, S_S); c.drawCentredString(width/2, height-1*inch, "Disclaimer / Warning")
+    c.setFont(FONT_REG, S_B)
+    for i, line in enumerate([
+        "This tool was created by Financial Engineering Students, not a regulated financial advisor.",
+        "Results are simulations only and cannot guarantee future outcomes.",
+        "Use this as rough estimation assistance only."
+    ]):
         c.drawCentredString(width/2, height-1.5*inch - i*20, line)
     c.showPage()
 
-    c.setFont(FONT_BOLD,S_S); c.drawString(1*inch,height-1*inch,"Table of Contents")
-    c.setFont(FONT_REG,S_L)
-    c.drawString(1.2*inch,height-1.6*inch,"1. Financial Health .................................................. Page 1")
-    c.drawString(1.2*inch,height-1.9*inch,"2. Asset Allocation & Simulation Result ................. Page 2")
+    # ---- Table of Contents ----
+    c.setFont(FONT_BOLD, S_S); c.drawString(1*inch, height-1*inch, "Table of Contents")
+    c.setFont(FONT_REG, S_L)
+    c.drawString(1.2*inch, height-1.6*inch, "1. Financial Health .................................................. Page 1")
+    c.drawString(1.2*inch, height-1.9*inch, "2. Asset Allocation & Simulation Result ................. Page 2")
     c.showPage()
 
-    c.setFont(FONT_BOLD,S_T); c.drawString(50,height-50,"Financial Planning: Financial Health")
+    # ---- Page 1: Financial Health ----
+    c.setFont(FONT_BOLD, S_T); c.drawString(50, height-50, "Financial Planning: Financial Health")
     y = height-90
-    c.setFont(FONT_BOLD,S_S); c.drawString(50,y,"A. Personal Information")
-    c.setFont(FONT_REG,S_B); y-=25
-    c.drawString(60,y,f"Name: {data.get('name','N/A')}")
-    c.drawString(250,y,f"Retire Age: {data.get('retire_age')} Years")
-    c.drawString(400,y,f"Life Expectancy: {data.get('life_exp')} Years")
-    y-=22; c.drawString(60,y,f"Inheritance Goal: {data.get('inheritance_goal',0):,.2f} THB")
+    c.setFont(FONT_BOLD, S_S); c.drawString(50, y, "A. Personal Information")
+    c.setFont(FONT_REG, S_B); y -= 25
+    c.drawString(60, y, f"Name: {data.get('name','N/A')}")
+    c.drawString(250, y, f"Retire Age: {data.get('retire_age')} Years")
+    c.drawString(400, y, f"Life Expectancy: {data.get('life_exp')} Years")
+    y -= 22; c.drawString(60, y, f"Inheritance Goal: {data.get('inheritance_goal', 0):,.2f} THB")
 
-    y-=45; c.setFont(FONT_BOLD,S_S); c.drawString(50,y,"B. Debt Summary")
-    c.setFont(FONT_REG,S_B); yc=y-25; has_debt=False
-    for k,info in data.get("debt_detail",{}).items():
-        amt = info.get("amount",0) if isinstance(info,dict) else info
-        mo  = info.get("months_remaining",None) if isinstance(info,dict) else None
-        if amt>0:
+    y -= 45; c.setFont(FONT_BOLD, S_S); c.drawString(50, y, "B. Debt Summary")
+    c.setFont(FONT_REG, S_B); yc = y-25; has_debt = False
+    for k, info in data.get("debt_detail", {}).items():
+        amt = info.get("amount", 0) if isinstance(info, dict) else info
+        mo  = info.get("months_remaining", None) if isinstance(info, dict) else None
+        if amt > 0:
             mo_str = f" (pay for {mo} months)" if mo else ""
-            c.drawString(60,yc,f"- {k}: {amt:,.2f} THB{mo_str}"); yc-=22; has_debt=True
-    if not has_debt: c.drawString(60,yc,"- No outstanding debt"); yc-=22
-    yd=yc-15; c.setFont(FONT_BOLD,S_B); c.drawString(60,yd,f"Total Liabilities: {data.get('total_debt',0):,.2f} THB")
+            c.drawString(60, yc, f"- {k}: {amt:,.2f} THB{mo_str}"); yc -= 22; has_debt = True
+    if not has_debt:
+        c.drawString(60, yc, "- No outstanding debt"); yc -= 22
+    yd = yc-15; c.setFont(FONT_BOLD, S_B)
+    c.drawString(60, yd, f"Total Liabilities: {data.get('total_debt', 0):,.2f} THB")
 
-    y=yd-45; c.setFont(FONT_BOLD,S_S); c.drawString(50,y,"C. Post-Retirement Cash Flow (Annual)")
-    xl=60; xr=320; cy=y-25; sy=cy
-    c.setFont(FONT_BOLD,S_L); c.drawString(xl,cy,"Income Sources"); c.setFont(FONT_REG,S_B); yi=cy
-    for k,v in data.get("inc_detail",{}).items():
-        if v>0: yi-=20; c.drawString(xl+15,yi,f"- {k}: {v:,.0f} THB")
-    c.setFont(FONT_BOLD,S_L); c.drawString(xr,sy,"Expenses Breakdown"); c.setFont(FONT_REG,S_B); ye=sy
-    all_exp={**data.get("exp_fixed_detail",{}),**data.get("exp_var_detail",{})}
-    for k,v in all_exp.items():
-        amt=v.get("amount",0) if isinstance(v,dict) else v
-        if amt>0: ye-=20; c.drawString(xr+15,ye,f"- {k}: {amt:,.0f} THB")
-    total_inc=sum(data.get("inc_detail",{}).values())
-    total_exp=0
-    for v in list(data.get("exp_fixed_detail",{}).values())+list(data.get("exp_var_detail",{}).values()):
-        total_exp += v.get("amount",0) if isinstance(v,dict) else v
-    net_flow=total_inc-total_exp
-    y=min(yi,ye)-40
-    c.setStrokeColorRGB(0.8,0.8,0.8); c.line(60,y+15,535,y+15)
-    c.setFont(FONT_BOLD,S_B); c.setFillColorRGB(0,0,0)
-    c.drawString(60,y,"Total Income:"); c.drawRightString(280,y,f"{total_inc:,.0f} THB")
-    c.drawString(320,y,"Total Expenses:"); c.drawRightString(535,y,f"{total_exp:,.0f} THB")
-    y-=60; c.setFont(FONT_BOLD,S_S); c.drawString(50,y,"Financial Health Summary")
-    y-=30; c.setFont(FONT_REG,S_B)
-    c.drawString(60,y,f"Investable Assets: {data.get('investable',0):,.2f} THB")
-    if net_flow<0: c.setFillColorRGB(0.8,0,0)
-    c.drawRightString(535,y,f"Net Cashflow/Year: {net_flow:,.2f} THB"); y-=22
-    c.drawRightString(535,y,f"Net Cashflow/Month: {net_flow/12:,.2f} THB")
-    c.setFillColorRGB(0,0,0); c.showPage()
+    y = yd-45; c.setFont(FONT_BOLD, S_S); c.drawString(50, y, "C. Post-Retirement Cash Flow (Annual)")
+    xl = 60; xr = 320; cy = y-25; sy = cy
+    c.setFont(FONT_BOLD, S_L); c.drawString(xl, cy, "Income Sources")
+    c.setFont(FONT_REG, S_B); yi = cy
+    for k, v in data.get("inc_detail", {}).items():
+        if v > 0: yi -= 20; c.drawString(xl+15, yi, f"- {k}: {v:,.0f} THB")
+    c.setFont(FONT_BOLD, S_L); c.drawString(xr, sy, "Expenses Breakdown")
+    c.setFont(FONT_REG, S_B); ye = sy
+    all_exp = {**data.get("exp_fixed_detail", {}), **data.get("exp_var_detail", {})}
+    for k, v in all_exp.items():
+        amt = v.get("amount", 0) if isinstance(v, dict) else v
+        if amt > 0: ye -= 20; c.drawString(xr+15, ye, f"- {k}: {amt:,.0f} THB")
+    total_inc = sum(data.get("inc_detail", {}).values())
+    total_exp = 0
+    for v in list(data.get("exp_fixed_detail", {}).values()) + list(data.get("exp_var_detail", {}).values()):
+        total_exp += v.get("amount", 0) if isinstance(v, dict) else v
+    net_flow = total_inc - total_exp
+    y = min(yi, ye) - 40
+    c.setStrokeColorRGB(0.8, 0.8, 0.8); c.line(60, y+15, 535, y+15)
+    c.setFont(FONT_BOLD, S_B); c.setFillColorRGB(0, 0, 0)
+    c.drawString(60, y, "Total Income:"); c.drawRightString(280, y, f"{total_inc:,.0f} THB")
+    c.drawString(320, y, "Total Expenses:"); c.drawRightString(535, y, f"{total_exp:,.0f} THB")
+    y -= 60; c.setFont(FONT_BOLD, S_S); c.drawString(50, y, "Financial Health Summary")
+    y -= 30; c.setFont(FONT_REG, S_B)
+    c.drawString(60, y, f"Investable Assets: {data.get('investable', 0):,.2f} THB")
+    if net_flow < 0: c.setFillColorRGB(0.8, 0, 0)
+    c.drawRightString(535, y, f"Net Cashflow/Year: {net_flow:,.2f} THB"); y -= 22
+    c.drawRightString(535, y, f"Net Cashflow/Month: {net_flow/12:,.2f} THB")
+    c.setFillColorRGB(0, 0, 0)
+    c.showPage()
 
-    yt=height-50; c.setFont(FONT_BOLD,S_T); c.drawString(50,yt,"Asset Allocation & Simulation Result")
-    yp=yt-45; c.setFont(FONT_BOLD,S_S); c.drawString(50,yp,"Asset Allocation Details")
-    adat=data.get("asset_detail",{})
-    lbs=[k for k,v in adat.items() if v>0]; vals=[v for k,v in adat.items() if v>0]
-    if vals:
-        fig_pie,ax_pie=plt.subplots(figsize=(4,4))
-        ax_pie.pie(vals,labels=lbs,autopct='%1.1f%%',startangle=140)
-        buf_pie=io.BytesIO(); plt.savefig(buf_pie,format='png',transparent=True); plt.close(fig_pie)
-        c.drawImage(ImageReader(buf_pie),30,yp-210,width=220,height=220)
-    yal=yp-50; c.setFont(FONT_BOLD,S_L); c.drawString(280,yal,"[Current Asset Value]"); c.setFont(FONT_REG,S_B)
-    for k,v in adat.items():
-        if v>0: yal-=18; c.drawString(290,yal,f"- {k}: {v:,.2f} THB")
-    yg=yp-250
+    # ---- Page 2: Asset Allocation & Simulation ----
+    yt = height-50; c.setFont(FONT_BOLD, S_T)
+    c.drawString(50, yt, "Asset Allocation & Simulation Result")
+
+    # FIX 1 & 2: Use allocation weights (pct_*) not raw THB values for the pie chart
+    ASSET_LABELS = {
+        "pct_deposit": "Fixed Deposit", "pct_bond": "Thai Gov Bond",
+        "pct_seti": "SET Index", "pct_REIT": "Thai REIT",
+        "pct_msci_stock": "MSCI World Equity", "pct_msci_bond": "MSCI Gov Bond",
+        "pct_gold": "Gold", "pct_msci_reit": "Global REIT",
+    }
+    alloc_weights = data.get("alloc_weights", {})  # NEW: pass this in export_data
+    # Fallback: derive from asset_detail if alloc_weights not provided
+    if not alloc_weights:
+        adat = data.get("asset_detail", {})
+        total_val = sum(v for v in adat.values() if v > 0)
+        if total_val > 0:
+            alloc_weights = {k: v/total_val for k, v in adat.items() if v > 0}
+
+    yp = yt-45; c.setFont(FONT_BOLD, S_S); c.drawString(50, yp, "Asset Allocation Details")
+
+    if alloc_weights:
+        lbs  = [ASSET_LABELS.get(k, k) for k, v in alloc_weights.items() if v > 0.001]
+        vals = [v for k, v in alloc_weights.items() if v > 0.001]
+        if vals:
+            fig_pie, ax_pie = plt.subplots(figsize=(4, 4))
+            wedges, texts, autotexts = ax_pie.pie(
+                vals, labels=None, autopct='%1.1f%%', startangle=140,
+                pctdistance=0.75
+            )
+            ax_pie.legend(wedges, lbs, loc="lower center",
+                          bbox_to_anchor=(0.5, -0.25), fontsize=7, ncol=2)
+            ax_pie.set_title("Portfolio Allocation Weights", fontsize=9, fontweight='bold')
+            plt.tight_layout()
+            buf_pie = io.BytesIO()
+            plt.savefig(buf_pie, format='png', transparent=True, bbox_inches='tight')
+            plt.close(fig_pie)
+            c.drawImage(ImageReader(buf_pie), 30, yp-220, width=220, height=220)
+
+    yal = yp-50; c.setFont(FONT_BOLD, S_L); c.drawString(280, yal, "[Portfolio Allocation]")
+    c.setFont(FONT_REG, S_B)
+    for k, v in alloc_weights.items():
+        if v > 0.001:
+            yal -= 18
+            c.drawString(290, yal, f"- {ASSET_LABELS.get(k, k)}: {v*100:.1f}%")
+
+    yg = yp-250
+
     if res is not None:
-        c.setFont(FONT_BOLD,S_S); c.drawString(50,yg,"Wealth Projection (Monte Carlo)")
-        fig_mc,ax_mc=plt.subplots(figsize=(10,4))
-        xr2=range(len(res["median_balance"]))
-        ax_mc.fill_between(xr2,res["percentile_10"],res["percentile_90"],alpha=0.2,label="10-90th Pctl")
-        ax_mc.plot(xr2,res["median_balance"],label="Median",linewidth=2,color='blue')
-        ax_mc.axhline(0,color='red',linestyle="--")
-        ig=data.get("inheritance_goal",0.0)
-        if ig>0: ax_mc.axhline(ig,color='purple',linestyle="-.",label=f"Goal ({ig:,.0f})")
-        ax_mc.legend(loc='upper left',fontsize='small')
-        ax_mc.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x,p:format(int(x),',')))
-        buf_mc=io.BytesIO(); plt.savefig(buf_mc,format='png',dpi=120); plt.close(fig_mc)
-        c.drawImage(ImageReader(buf_mc),50,yg-230,width=500,height=220)
-        ys=yg-260
-        c.setStrokeColorRGB(0.7,0.7,0.7); c.line(50,ys+15,width-50,ys+20)
-        ys-=20; c.setFont(FONT_BOLD,S_S); c.drawString(50,ys,"Simulation Outcome Summary")
-        c.setFont(FONT_REG,S_B); ys-=25
-        sr=res.get("survival_rate",0)*100; me=res["median_balance"][-1]; ihs=res.get("inheritance_success_rate",0)*100
-        c.drawString(60,ys,f"Survival Rate: {sr:.1f}%"); c.drawString(300,ys,f"Median End Balance: {me:,.2f} THB"); ys-=20
-        c.drawString(60,ys,f"Inheritance Success: {ihs:.1f}%"); c.drawString(300,ys,f"Strategy: {data.get('sim_strat')}"); ys-=20
-        c.drawString(60,ys,f"Withdrawal Rate: {data.get('wd_rate',0)*100:.2f}%"); c.drawString(300,ys,f"Inflation: {data.get('inflation',0.03)*100:.2f}%")
+        retire_age = data.get("retire_age", 60)
 
-    # BUG FIX 6: always save and return — previously the return was INSIDE
-    # the "if res is not None" block, so calling without a simulation result
-    # would return None and crash the download button.
+        c.setFont(FONT_BOLD, S_S); c.drawString(50, yg, "Wealth Projection (Monte Carlo — 50,000 paths)")
+
+        # FIX 3, 4, 5, 6: Match Streamlit chart — 25/75 band, age axis, depletion line, M formatter
+        fig_mc, ax_mc = plt.subplots(figsize=(10, 4))
+        xr2 = list(range(len(res["median_balance"])))
+        med = res["median_balance"]
+        p10 = res["percentile_10"]
+        p25 = res["percentile_25"]
+        p75 = res["percentile_75"]
+        p90 = res["percentile_90"]
+
+        ax_mc.fill_between(xr2, p10, p90, alpha=0.10, color='steelblue',
+                           label="10th–90th Percentile")
+        ax_mc.fill_between(xr2, p25, p75, alpha=0.30, color='steelblue',
+                           label="25th–75th Percentile")
+        ax_mc.plot(xr2, p10, color='steelblue', linewidth=0.7, linestyle=':', alpha=0.5)
+        ax_mc.plot(xr2, p90, color='steelblue', linewidth=0.7, linestyle=':', alpha=0.5)
+        ax_mc.plot(xr2, med, label="Median (50th Pctl)", color='steelblue', linewidth=2.5)
+        ax_mc.axhline(0, color='red', linestyle="--", linewidth=1.5, label="Portfolio Depleted (฿0)")
+
+        inh_goal = data.get("inheritance_goal", 0.0)
+        if inh_goal and inh_goal > 0:
+            ax_mc.axhline(inh_goal, color='purple', linestyle="-.", linewidth=1.5,
+                          label=f"Inheritance Goal ({inh_goal:,.0f} THB)")
+
+        # FIX 5: Depletion vertical line
+        depletion_yr = next((i for i, v in enumerate(med) if v <= 0), None)
+        if depletion_yr:
+            ax_mc.axvline(depletion_yr, color='orange', linestyle=':', linewidth=1.5,
+                          label=f"Median depletes @ Year {depletion_yr}")
+
+        ax_mc.set_xlabel("Year from Retirement")
+        ax_mc.set_ylabel("Portfolio Value (THB)")
+        ax_mc.set_title("Wealth Projection — Monte Carlo Simulation")
+
+        # FIX 4: Age labels on top axis
+        ax2 = ax_mc.twiny()
+        ax2.set_xlim(ax_mc.get_xlim())
+        tick_positions = xr2[::5]
+        ax2.set_xticks(tick_positions)
+        ax2.set_xticklabels([f"Age {retire_age + i}" for i in tick_positions], fontsize=8)
+
+        # FIX 6: Y-axis M/K formatter
+        ax_mc.get_yaxis().set_major_formatter(
+            plt.FuncFormatter(lambda v, p: f"{v/1e6:.1f}M" if abs(v) >= 1e6 else format(int(v), ','))
+        )
+
+        ax_mc.legend(loc='upper right', fontsize='small')
+        plt.tight_layout()
+        buf_mc = io.BytesIO()
+        plt.savefig(buf_mc, format='png', dpi=120, bbox_inches='tight')
+        plt.close(fig_mc)
+        c.drawImage(ImageReader(buf_mc), 50, yg-230, width=500, height=220)
+
+        ys = yg-260
+        c.setStrokeColorRGB(0.7, 0.7, 0.7); c.line(50, ys+15, width-50, ys+20)
+        ys -= 20; c.setFont(FONT_BOLD, S_S); c.drawString(50, ys, "Simulation Outcome Summary")
+        c.setFont(FONT_REG, S_B); ys -= 25
+        sr  = res.get("survival_rate", 0) * 100
+        me = res.get("median_surviving", res["median_balance"][-1])
+
+        # FIX 7: Guard inheritance_success_rate against -1.0
+        raw_ihs = res.get("inheritance_success_rate", -1.0)
+        ihs_str = f"{raw_ihs*100:.1f}%" if raw_ihs >= 0 else "N/A (no goal set)"
+
+        c.drawString(60, ys, f"Survival Rate: {sr:.1f}%")
+        c.drawString(300, ys, f"Median End Balance: {me:,.2f} THB"); ys -= 20
+        c.drawString(60, ys, f"Inheritance Success: {ihs_str}")
+        c.drawString(300, ys, f"Strategy: {data.get('sim_strat', '-')}"); ys -= 20
+        c.drawString(60, ys, f"Withdrawal Rate: {data.get('wd_rate', 0)*100:.2f}%")
+        c.drawString(300, ys, f"Inflation: {data.get('inflation', 0.03)*100:.2f}%")
+
     c.save()
     return buffer.getvalue()
 
@@ -1609,6 +1705,7 @@ elif st.session_state["current_step"] == 3:
                 }
                 for item in st.session_state.get("timed_debt_items", [])
             },
+            "alloc_weights":st.session_state.get("saved_alloc",{})
         }
 
         st.session_state["export_data"]      = export_data
