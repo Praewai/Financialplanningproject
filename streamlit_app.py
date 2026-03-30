@@ -778,17 +778,16 @@ def build_pdf_bytes(data, res):
         lbs  = [ASSET_LABELS.get(k, k) for k, v in alloc_weights.items() if v > 0.001]
         vals = [v for k, v in alloc_weights.items() if v > 0.001]
         if vals:
-            fig_pie, ax_pie = plt.subplots(figsize=(4, 4))
+            fig_pie, ax_pie = plt.subplots(figsize=(4, 4),dpi=200)
             wedges, texts, autotexts = ax_pie.pie(
                 vals, labels=None, autopct='%1.1f%%', startangle=140,
                 pctdistance=0.75
             )
             ax_pie.legend(wedges, lbs, loc="lower center",
                           bbox_to_anchor=(0.5, -0.25), fontsize=7, ncol=2)
-            ax_pie.set_title("Portfolio Allocation Weights", fontsize=9, fontweight='bold')
             plt.tight_layout()
             buf_pie = io.BytesIO()
-            plt.savefig(buf_pie, format='png', transparent=True, bbox_inches='tight')
+            plt.savefig(buf_pie, format='png',dpi=200, transparent=True, bbox_inches='tight')
             plt.close(fig_pie)
             c.drawImage(ImageReader(buf_pie), 30, yp-220, width=220, height=220)
 
